@@ -89,8 +89,8 @@ class DatasetGenerator:
                 
         return vec
 
-    def generate(self, max_samples: int = 1000) -> List[DatasetSample]:
-        """Runs the dataset generation loop over all files in dry_dir."""
+    def generate(self, max_samples: int = 1000, sc_ratio: float = 0.5) -> List[DatasetSample]:
+        """Runs the dataset generation loop over files in dry_dir maintaining the sc_ratio."""
         # Prepare subdirectories
         dry_out_dir = self.output_dir / "audio" / "dry"
         wet_out_dir = self.output_dir / "audio" / "wet"
@@ -100,28 +100,54 @@ class DatasetGenerator:
         wet_out_dir.mkdir(parents=True, exist_ok=True)
         features_out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get all dry audio files
-        dry_files = []
+        # Separate dry files by source folder
+        vctk_dir = self.dry_dir / "vctk"
+        sc_dir = self.dry_dir / "soundcloud"
+        
+        vctk_files = []
+        sc_files = []
         for ext in ["*.wav", "*.mp3", "*.flac"]:
-            dry_files.extend(list(self.dry_dir.rglob(ext)))
+            if vctk_dir.exists():
+                vctk_files.extend(list(vctk_dir.rglob(ext)))
+            if sc_dir.exists():
+                sc_files.extend(list(sc_dir.rglob(ext)))
 
-        if not dry_files:
+        if not vctk_files and not sc_files:
             print(f"[-] No dry audio files found in: {self.dry_dir}")
             return []
 
-        print(f"[*] Found {len(dry_files)} dry audio source files. Generating {max_samples} dataset samples...")
+        # Determine target count per source based on sc_ratio
+        if sc_files and vctk_files:
+            sc_target = int(max_samples * sc_ratio)
+            vctk_target = max_samples - sc_target
+        elif sc_files:
+            print("[!] VCTK source files not found. Generating 100% from SoundCloud.")
+            sc_target = max_samples
+            vctk_target = 0
+        else:
+            print("[!] SoundCloud source files not found. Generating 100% from VCTK.")
+            sc_target = 0
+            vctk_target = max_samples
+
+        print(f"[*] Target distribution: SoundCloud: {sc_target} samples, VCTK: {vctk_target} samples.")
         
+        # Build sources pool
+        source_pool = (["soundcloud"] * sc_target) + (["vctk"] * vctk_target)
+        random.shuffle(source_pool)
+
         samples = []
         index_file = self.output_dir / "index.jsonl"
         
-        # Write to JSONL directly in a append loop
+        # Write to JSONL directly in a loop
         with open(index_file, "w", encoding="utf-8") as f_index:
-            for i in tqdm(range(max_samples)):
-                # 1. Choose a dry file
-                src_file = random.choice(dry_files)
-                
-                # Determine source name (e.g. parent directory name or prefix)
-                source_name = "vctk" if "vctk" in str(src_file).lower() else "soundcloud"
+            for i, src_type in enumerate(tqdm(source_pool)):
+                # Choose file from correct pool
+                if src_type == "soundcloud":
+                    src_file = random.choice(sc_files)
+                    source_name = "soundcloud"
+                else:
+                    src_file = random.choice(vctk_files)
+                    source_name = "vctk"
                 
                 try:
                     # 2. Load the dry audio (LUFS-normalized to target -23dB)

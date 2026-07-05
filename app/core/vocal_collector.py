@@ -109,8 +109,8 @@ class VocalCollector:
             print(f"[-] Demucs vocal separation failed: {e}")
             return None
 
-    def slice_audio(self, audio_path: Path, output_dir: Path, prefix: str, segment_sec: float = 8.0, min_rms: float = 0.01) -> List[Path]:
-        """Slices an audio file into fixed-length segments, skipping silent blocks."""
+    def slice_audio(self, audio_path: Path, output_dir: Path, prefix: str, segment_sec: float = 8.0, min_rms: float = 0.015, min_vocal_ratio: float = 0.5) -> List[Path]:
+        """Slices an audio file into fixed-length segments, skipping parts with low voice activity."""
         output_dir.mkdir(parents=True, exist_ok=True)
         sliced_paths = []
         
@@ -120,17 +120,27 @@ class VocalCollector:
             total_samples = len(y)
             num_segments = total_samples // seg_samples
             
-            print(f"[*] Slicing {audio_path.name} into {num_segments} segments of {segment_sec}s...")
+            print(f"[*] Slicing {audio_path.name} into segments (Voice Activity filter: min_vocal_ratio={min_vocal_ratio})...")
+            
+            # Frame-level RMS parameters (50ms frames, 25ms overlap)
+            frame_len = int(0.05 * sr)
+            hop_len = int(0.025 * sr)
             
             for i in range(num_segments):
                 start = i * seg_samples
                 end = start + seg_samples
                 chunk = y[start:end]
                 
-                # Check RMS level to skip silent parts
-                rms = np.sqrt(np.mean(chunk**2))
-                if rms < min_rms:
-                    continue
+                # Compute frame-level RMS
+                frames = librosa.util.frame(chunk, frame_length=frame_len, hop_length=hop_len)
+                frame_rms = np.sqrt(np.mean(frames**2, axis=0))
+                
+                # Check ratio of frames exceeding threshold
+                vocal_frames = np.sum(frame_rms > min_rms)
+                vocal_ratio = vocal_frames / len(frame_rms)
+                
+                if vocal_ratio < min_vocal_ratio:
+                    continue  # skip segment due to insufficient vocal density
                 
                 segment_path = output_dir / f"{prefix}_{i:03d}.wav"
                 sf.write(segment_path, chunk, sr)

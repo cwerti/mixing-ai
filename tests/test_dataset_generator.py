@@ -23,9 +23,14 @@ def temp_dataset_env():
     y1 = 0.3 * np.sin(2 * np.pi * 220 * t)
     y2 = 0.2 * np.sin(2 * np.pi * 440 * t)
     
-    sf.write(dry_dir / "vctk_p225_001.wav", y1, sr)
-    sf.write(dry_dir / "vctk_p225_002.wav", y2, sr)
-    sf.write(dry_dir / "sc_track1.wav", y1, sr)
+    vctk_dir = dry_dir / "vctk"
+    sc_dir = dry_dir / "soundcloud"
+    vctk_dir.mkdir(parents=True, exist_ok=True)
+    sc_dir.mkdir(parents=True, exist_ok=True)
+    
+    sf.write(vctk_dir / "vctk_p225_001.wav", y1, sr)
+    sf.write(vctk_dir / "vctk_p225_002.wav", y2, sr)
+    sf.write(sc_dir / "sc_track1.wav", y1, sr)
     
     yield dry_dir, output_dir
     
