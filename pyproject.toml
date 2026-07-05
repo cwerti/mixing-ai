@@ -27,6 +27,7 @@ yt-dlp = "^2026.7.4"
 demucs = "^4.0.1"
 torch = "2.4.0"
 torchaudio = "2.4.0"
+datasets = "^5.0.0"
 
 
 [build-system]
