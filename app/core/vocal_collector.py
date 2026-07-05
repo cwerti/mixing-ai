@@ -38,6 +38,7 @@ class VocalCollector:
             urls = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
         print(f"[*] Found {len(urls)} SoundCloud URLs to download.")
+        archive_file = download_dir.parent / "soundcloud_download_archive.txt"
         for url in urls:
             print(f"[*] Downloading track/playlist: {url}...")
             try:
@@ -49,6 +50,7 @@ class VocalCollector:
                     "-x", "--audio-format", "wav",
                     "--yes-playlist",
                     "--ignore-errors",
+                    "--download-archive", str(archive_file.absolute()),
                     "-o", out_tmpl,
                     url
                 ]
@@ -66,6 +68,14 @@ class VocalCollector:
     def separate_vocals(self, audio_path: Path, separation_dir: Path) -> Optional[Path]:
         """Extracts vocals from target audio_path using Demucs CLI."""
         separation_dir.mkdir(parents=True, exist_ok=True)
+        
+        song_name = audio_path.stem
+        vocals_file = separation_dir / "htdemucs" / song_name / "vocals.wav"
+        
+        if vocals_file.exists():
+            print(f"[+] Demucs separated vocals already exist at: {vocals_file}. Skipping separation.")
+            return vocals_file
+            
         print(f"[*] Running Demucs vocal separation on: {audio_path.name}...")
         
         try:

@@ -41,7 +41,7 @@ def main():
     collector = VocalCollector(sr=44100)
     if urls_file.exists():
         print("[*] Running SoundCloud vocal collection pipeline...")
-        download_dir = Path("data/raw/soundcloud_temp")
+        download_dir = Path("data/raw/soundcloud_raw")
         downloaded = collector.download_soundcloud(urls_file, download_dir)
         
         # Extract vocals using Demucs and slice them
@@ -53,10 +53,6 @@ def main():
                     output_dir=raw_dry_dir / "soundcloud",
                     prefix=f"sc_{f_path.stem}"
                 )
-        # Clean up temporary downloads
-        if download_dir.exists():
-            import shutil
-            shutil.rmtree(download_dir, ignore_errors=True)
             
     # 2. Check if we have VCTK or other dry vocals
     # Fallback option: if no dry vocals found, generate a basic synthetic dry voice from project audio

@@ -25,6 +25,7 @@ pedalboard = "^0.9.23"
 tqdm = "^4.68.3"
 yt-dlp = "^2026.7.4"
 demucs = "^4.0.1"
+torchcodec = "^0.14.0"
 
 
 [build-system]
