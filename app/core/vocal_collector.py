@@ -27,7 +27,7 @@ class VocalCollector:
 
         print(f"[*] Found {len(urls)} SoundCloud URLs to download.")
         for url in urls:
-            print(f"[*] Downloading track: {url}...")
+            print(f"[*] Downloading track/playlist: {url}...")
             try:
                 # Use yt-dlp to download and convert to wav
                 # Output filename format: download_dir/title.wav
@@ -35,11 +35,13 @@ class VocalCollector:
                 cmd = [
                     "yt-dlp",
                     "-x", "--audio-format", "wav",
+                    "--yes-playlist",
+                    "--ignore-errors",
                     "-o", out_tmpl,
                     url
                 ]
                 subprocess.run(cmd, check=True)
-                print(f"[+] Downloaded and converted {url}")
+                print(f"[+] Successfully processed {url}")
             except Exception as e:
                 print(f"[-] Failed to download {url}: {e}")
 
