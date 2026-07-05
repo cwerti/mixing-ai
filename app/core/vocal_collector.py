@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import shutil
 import librosa
@@ -6,6 +7,12 @@ import soundfile as sf
 import numpy as np
 from pathlib import Path
 from typing import List, Optional
+
+# Prevent Windows console UnicodeEncodeError crashes when printing non-ASCII filenames
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(errors='replace')
 
 class VocalCollector:
     """Handles downloading from SoundCloud, vocal extraction via Demucs, and audio slicing."""

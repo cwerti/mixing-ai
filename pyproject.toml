@@ -8,7 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.12,<3.15"
 librosa = "^0.11.0"
-numpy = "^2.4.4"
+numpy = "^1.26.4"
 scipy = "^1.17.1"
 pyflp = "^2.2.1"
 pyside6 = "^6.11.0"
@@ -25,7 +25,8 @@ pedalboard = "^0.9.23"
 tqdm = "^4.68.3"
 yt-dlp = "^2026.7.4"
 demucs = "^4.0.1"
-torchcodec = "^0.14.0"
+torch = "2.4.0"
+torchaudio = "2.4.0"
 
 
 [build-system]
