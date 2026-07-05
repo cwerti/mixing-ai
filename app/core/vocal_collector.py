@@ -126,6 +126,23 @@ class VocalCollector:
             frame_len = int(0.05 * sr)
             hop_len = int(0.025 * sr)
             
+            # Handle short audio files by padding
+            if total_samples < seg_samples:
+                # Ensure we have at least one frame length of samples to avoid empty frame check
+                if total_samples >= frame_len:
+                    frames = librosa.util.frame(y, frame_length=frame_len, hop_length=hop_len)
+                    frame_rms = np.sqrt(np.mean(frames**2, axis=0))
+                    vocal_frames = np.sum(frame_rms > min_rms)
+                    vocal_ratio = vocal_frames / len(frame_rms)
+                    
+                    if vocal_ratio >= min_vocal_ratio:
+                        padded = np.zeros(seg_samples, dtype=np.float32)
+                        padded[:total_samples] = y
+                        segment_path = output_dir / f"{prefix}_short.wav"
+                        sf.write(segment_path, padded, sr)
+                        sliced_paths.append(segment_path)
+                return sliced_paths
+                
             for i in range(num_segments):
                 start = i * seg_samples
                 end = start + seg_samples
