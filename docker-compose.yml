@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  mixing-ai-brain:
+    build: .
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8000:8000" # API
+      - "9000:9000" # IL Remote TCP (Handshake)
+      - "9100:9100/udp" # IL Remote UDP (MIDI Data)
+    environment:
+      - PYTHONUNBUFFERED=1
+    network_mode: "host" # Позволяет FL Studio видеть контейнер как локальное устройство

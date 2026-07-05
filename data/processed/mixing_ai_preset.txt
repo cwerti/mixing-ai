@@ -1,0 +1,7 @@
+Band 1: Freq=1184.3Hz (Param=0.628), Gain=1.2dB (Param=0.534)
+Band 2: Freq=3466.8Hz (Param=0.769), Gain=1.1dB (Param=0.531)
+Band 3: Freq=5749.4Hz (Param=0.836), Gain=3.1dB (Param=0.587)
+Band 4: Freq=8010.4Hz (Param=0.880), Gain=4.2dB (Param=0.617)
+Band 5: Freq=10292.9Hz (Param=0.913), Gain=5.6dB (Param=0.657)
+Band 6: Freq=12575.4Hz (Param=0.939), Gain=6.3dB (Param=0.675)
+Band 7: Freq=14857.9Hz (Param=0.961), Gain=6.6dB (Param=0.683)
