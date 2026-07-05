@@ -11,6 +11,19 @@ from app.core.vocal_collector import VocalCollector
 from app.core.dataset_generator import DatasetGenerator
 
 def main():
+    # Dynamically inject WinGet FFmpeg directory into PATH to bypass Windows environment refresh issues
+    try:
+        import os
+        winget_base = Path(os.path.expanduser("~")) / "AppData/Local/Microsoft/WinGet/Packages"
+        if winget_base.exists():
+            ffmpeg_bins = list(winget_base.rglob("ffmpeg.exe"))
+            if ffmpeg_bins:
+                ffmpeg_bin_dir = ffmpeg_bins[0].parent
+                os.environ["PATH"] = str(ffmpeg_bin_dir.absolute()) + os.pathsep + os.environ["PATH"]
+                print(f"[+] Programmatically added FFmpeg to PATH: {ffmpeg_bin_dir}")
+    except Exception as e:
+        print(f"[!] Warning during dynamic FFmpeg path injection: {e}")
+
     parser = argparse.ArgumentParser(description="Mixing-AI Dataset Preparation CLI")
     parser.add_argument("--max-samples", type=int, default=100, help="Maximum number of dataset samples to generate")
     parser.add_argument("--output-dir", type=str, default="data/processed/dataset_v1", help="Path to store processed dataset")

@@ -12,6 +12,18 @@ class VocalCollector:
     
     def __init__(self, sr: int = 44100):
         self.sr = sr
+        # Dynamic path injection for WinGet-installed FFmpeg (handles Windows shell restart issue)
+        try:
+            import os
+            winget_base = Path(os.path.expanduser("~")) / "AppData/Local/Microsoft/WinGet/Packages"
+            if winget_base.exists():
+                ffmpeg_bins = list(winget_base.rglob("ffmpeg.exe"))
+                if ffmpeg_bins:
+                    ffmpeg_bin_dir = ffmpeg_bins[0].parent
+                    if str(ffmpeg_bin_dir.absolute()) not in os.environ["PATH"]:
+                        os.environ["PATH"] = str(ffmpeg_bin_dir.absolute()) + os.pathsep + os.environ["PATH"]
+        except Exception:
+            pass
 
     def download_soundcloud(self, urls_file: Path, download_dir: Path) -> List[Path]:
         """Downloads SoundCloud tracks listed in urls_file using yt-dlp."""
