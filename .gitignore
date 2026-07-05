@@ -45,3 +45,9 @@ coverage.xml
 # Local data (optional, but keep caches/temp clean)
 .pytest_cache/
 .coverage
+
+# Generated Datasets and Raw Vocals
+data/processed/dataset_v1/
+data/raw/dry_vocals/
+data/raw/soundcloud_temp/
+data/raw/soundcloud_separated/
