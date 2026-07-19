@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from app.core.bridge_client import BridgeClient
+from app.bridge.bridge_client import BridgeClient
 
 def test_bridge_client_math():
     client = BridgeClient(port_name="Test Port")

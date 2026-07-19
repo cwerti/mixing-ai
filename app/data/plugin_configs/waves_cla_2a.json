@@ -1,0 +1,12 @@
+{
+  "plugin_id": "waves_cla_2a",
+  "display_name": "Waves CLA-2A",
+  "category": "compressor",
+  "vst_type": "VST3",
+  "capabilities": {},
+  "parameter_mapping": {
+    "peak_reduction": { "index": 0, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 100.0 } },
+    "gain": { "index": 1, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 100.0 } },
+    "comp_mode": { "index": 2, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 1.0 } }
+  }
+}

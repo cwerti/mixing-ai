@@ -1,0 +1,33 @@
+{
+  "plugin_id": "fabfilter_pro_q_3",
+  "display_name": "FabFilter Pro-Q 3",
+  "category": "eq",
+  "vst_type": "VST3",
+  "capabilities": {
+    "num_bands": 24,
+    "has_dynamic_eq": true
+  },
+  "parameter_mapping": {
+    "band1_freq": { "index": 2, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band1_gain": { "index": 3, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band1_q": { "index": 4, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } },
+    "band2_freq": { "index": 7, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band2_gain": { "index": 8, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band2_q": { "index": 9, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } },
+    "band3_freq": { "index": 12, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band3_gain": { "index": 13, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band3_q": { "index": 14, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } },
+    "band4_freq": { "index": 17, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band4_gain": { "index": 18, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band4_q": { "index": 19, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } },
+    "band5_freq": { "index": 22, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band5_gain": { "index": 23, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band5_q": { "index": 24, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } },
+    "band6_freq": { "index": 27, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band6_gain": { "index": 28, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band6_q": { "index": 29, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } },
+    "band7_freq": { "index": 32, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 30000.0 } },
+    "band7_gain": { "index": 33, "type": "float", "range_mapping": { "type": "linear", "min_phys": -30.0, "max_phys": 30.0 } },
+    "band7_q": { "index": 34, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.025, "max_phys": 40.0 } }
+  }
+}

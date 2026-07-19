@@ -1,0 +1,12 @@
+{
+  "plugin_id": "fruity_delay_3",
+  "display_name": "Fruity Delay 3",
+  "category": "delay",
+  "vst_type": "Native",
+  "capabilities": {},
+  "parameter_mapping": {
+    "delay_seconds": { "index": 0, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.05, "max_phys": 0.5 } },
+    "feedback": { "index": 1, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 0.5 } },
+    "mix": { "index": 2, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 0.3 } }
+  }
+}

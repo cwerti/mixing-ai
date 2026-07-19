@@ -28,6 +28,7 @@ demucs = "^4.0.1"
 torch = "2.4.0"
 torchaudio = "2.4.0"
 datasets = "^5.0.0"
+tensorboard = "^2.21.0"
 
 
 [build-system]

@@ -1,5 +1,5 @@
 import pytest
-from app.core.plugin_manager import PLUGIN_DB, PluginLoader
+from app.bridge.plugin_manager import PLUGIN_DB, PluginLoader
 
 def test_plugin_db_structure():
     # Check that required plugins exist in the DB

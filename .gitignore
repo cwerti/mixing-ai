@@ -47,10 +47,9 @@ coverage.xml
 .coverage
 
 # Generated Datasets and Raw Vocals
-data/processed/dataset_v1/
-data/raw/dry_vocals/
-data/raw/soundcloud_temp/
-data/raw/soundcloud_raw/
-data/raw/soundcloud_separated/
-data/raw/soundcloud_download_archive.txt
-data/raw/vctk_subset/
+data/processed/
+data/raw/
+data/runs/
+data/models/
+*.wav
+*.mp3

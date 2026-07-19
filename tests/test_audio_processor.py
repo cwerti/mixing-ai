@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import librosa
-from app.core.audio_processor import AudioProcessor, db_to_amplitude
+from app.audio.audio_processor import AudioProcessor, db_to_amplitude
 
 @pytest.fixture
 def temp_audio_file():

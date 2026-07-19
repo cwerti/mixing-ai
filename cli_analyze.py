@@ -11,45 +11,53 @@ import numpy as np
 import librosa
 import mido
 
-from app.core.audio_processor import AudioProcessor
-from app.core.preset_generator import PresetGenerator
-from app.core.virtual_midi import TeVirtualMIDI
+from app.audio.audio_processor import AudioProcessor
+from app.presets.preset_generator import PresetGenerator
+from app.bridge.virtual_midi import TeVirtualMIDI
 
 # --- КОНФИГУРАЦИЯ ---
-# Прямая ссылка на установщик драйвера (v1.3.0.43)
+# Прямая ссылка на установщик драйвера teVirtualMIDI (v1.3.0.43)
 VIRTUAL_MIDI_URL = "https://www.tobias-erichsen.de/wp-content/uploads/2020/01/teVirtualMIDI_setup.exe"
-# Системный путь к DLL после установки
+# Системный путь к DLL после установки драйвера
 DLL_PATH_64 = Path("C:/Windows/System32/teVirtualMIDI64.dll")
 
-def install_driver_silent():
-    """Скрытая установка системного драйвера."""
+def install_driver_silent() -> bool:
+    """
+    Скрытая фоновая установка драйвера виртуального MIDI-порта на Windows.
+    
+    Returns:
+        bool: True в случае успешной установки или если драйвер уже установлен.
+    """
     if platform.system() != "Windows" or DLL_PATH_64.exists():
         return True
 
-    print("[-] MIDI-драйвер не найден. Начинаю скрытую установку...")
+    print("[-] Системный MIDI-драйвер не найден. Запуск фоновой установки...")
     try:
         setup_exe = Path("teVirtualMIDI_setup.exe")
-        # Скачивание напрямую exe
+        
+        # Скачивание установщика
         opener = urllib.request.build_opener()
         opener.addheaders = [('User-agent', 'Mozilla/5.0')]
         urllib.request.install_opener(opener)
         
-        print(f"[*] Загрузка с {VIRTUAL_MIDI_URL}...")
+        print(f"[*] Скачивание с {VIRTUAL_MIDI_URL}...")
         urllib.request.urlretrieve(VIRTUAL_MIDI_URL, setup_exe)
         
-        print("[*] Установка... Это займет 5 секунд (потребуются права администратора).")
-        # /VERYSILENT - флаг InnoSetup для полной невидимости
+        print("[*] Установка... Требуются права администратора.")
+        # Запуск с флагом тихой установки InnoSetup
         subprocess.run([str(setup_exe.absolute()), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"], check=True)
         
         setup_exe.unlink(missing_ok=True)
-        print("[+] Драйвер успешно интегрирован в систему.")
+        print("[+] Драйвер виртуального MIDI успешно установлен в систему.")
         return True
     except Exception as e:
-        print(f"[-] Ошибка установки: {e}")
+        print(f"[-] Ошибка при установке драйвера: {e}")
         return False
 
 def install_fl_bridge():
-    """Автоматическая установка моста в FL Studio."""
+    """
+    Автоматическая установка/обновление скрипта MIDI-моста в настройках оборудования FL Studio.
+    """
     try:
         docs = Path(os.path.expanduser("~/Documents"))
         fl_path = docs / "Image-Line/FL Studio/Settings/Hardware/MixingAI_Bridge"
@@ -77,57 +85,60 @@ def OnMidiMsg(event):
             elif 8 <= cc <= 14: plugins.setParamValue(val, (cc-8)*5+1, tr, slot)
             event.handled = True
 """)
-        print("[+] Мост в FL Studio обновлен.")
+        print("[+] Мост в FL Studio успешно обновлен.")
     except Exception as e:
-        print(f"[-] Ошибка установки моста: {e}")
+        print(f"[-] Не удалось обновить мост FL Studio: {e}")
 
 def main():
-    print("=== MIXING-AI PRO: FULL STEALTH AUTOMATION ===")
+    """
+    Основная функция CLI-утилиты для скрытой автоматизации и настройки эквалайзера.
+    """
+    print("=== MIXING-AI PRO: АВТОМАТИЧЕСКАЯ НАСТРОЙКА ЭКВАЛАЙЗЕРА ===")
     
-    # 1. Тихая подготовка системы
+    # 1. Проверка/установка драйвера
     if not install_driver_silent():
-        print("[!] Запусти скрипт от имени Администратора для первой установки.")
+        print("[!] Запустите скрипт с правами Администратора для установки драйвера при первом запуске.")
         return
 
-    # 2. Поднимаем невидимый порт
+    # 2. Создание виртуального MIDI-порта
     v_midi = TeVirtualMIDI("Mixing-AI")
     if not v_midi.create_port():
-        print("[-] Не удалось создать MIDI-порт. Перезапусти скрипт.")
+        print("[-] Ошибка создания виртуального MIDI-порта. Перезапустите скрипт.")
         return
     
-    print("[+] Программный порт 'Mixing-AI' активен.")
+    print("[+] Виртуальный MIDI-порт 'Mixing-AI' успешно активирован.")
     install_fl_bridge()
 
-    # 3. Анализ
+    # 3. Акустический анализ
     source_path = Path("data/raw/source/source.wav")
     ref_path = Path("data/raw/reference/reference.wav")
 
     if source_path.exists():
-        print("[*] Анализ аудио...")
+        print("[*] Анализ аудиофайлов...")
         processor = AudioProcessor()
         y_s = processor.load_audio(source_path)
         y_r = processor.load_audio(ref_path)
         delta = processor.get_spectral_envelope(y_r) - processor.get_spectral_envelope(y_s)
         bands = PresetGenerator().extract_key_bands(librosa.fft_frequencies(sr=44100, n_fft=2048), delta)
 
-        # 4. Передача (через mido)
-        time.sleep(1) # Даем FL Studio увидеть новый порт
+        # 4. Передача параметров через MIDI
+        time.sleep(1) # Время для распознавания порта в FL Studio
         try:
             with mido.open_output("Mixing-AI") as outport:
-                print("[*] Настройка FL Studio...")
-                # Wake up
+                print("[*] Отправка настроек в FL Studio...")
+                # Посылаем сигнал пробуждения
                 outport.send(mido.Message('control_change', channel=15, control=0, value=127))
                 time.sleep(0.5)
                 for i, (f, g) in enumerate(bands):
                     f_p, g_p = (np.log10(f)-1)/3.301, (g+18)/36
                     outport.send(mido.Message('control_change', channel=15, control=i+1, value=int(np.clip(f_p*127, 0, 127))))
                     outport.send(mido.Message('control_change', channel=15, control=i+8, value=int(np.clip(g_p*127, 0, 127))))
-                print("[SUCCESS] Эквалайзер настроен!")
+                print("[SUCCESS] Настройки эквалайзера успешно применены!")
         except Exception as e:
-            print(f"[-] Ошибка отправки: {e}")
-            print("[!] Один раз включи 'Mixing-AI' в настройках MIDI в FL Studio.")
+            print(f"[-] Ошибка отправки MIDI: {e}")
+            print("[!] Убедитесь, что порт 'Mixing-AI' включен во входных устройствах (MIDI Input) в FL Studio.")
     else:
-        print("[-] Файлы не найдены.")
+        print(f"[-] Аудиофайлы не найдены по пути: {source_path}")
 
     time.sleep(1)
     v_midi.close()

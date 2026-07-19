@@ -1,0 +1,13 @@
+{
+  "plugin_id": "fabfilter_pro_c_2",
+  "display_name": "FabFilter Pro-C 2",
+  "category": "compressor",
+  "vst_type": "VST3",
+  "capabilities": {},
+  "parameter_mapping": {
+    "threshold": { "index": 0, "type": "float", "range_mapping": { "type": "linear", "min_phys": -60.0, "max_phys": 0.0 } },
+    "ratio": { "index": 1, "type": "float", "range_mapping": { "type": "exponential", "min_phys": 1.0, "max_phys": 100.0 } },
+    "attack": { "index": 2, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 0.05, "max_phys": 250.0 } },
+    "release": { "index": 3, "type": "float", "range_mapping": { "type": "logarithmic", "min_phys": 10.0, "max_phys": 9000.0 } }
+  }
+}

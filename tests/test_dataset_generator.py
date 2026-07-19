@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 import soundfile as sf
 from pathlib import Path
-from app.core.dataset_generator import DatasetGenerator
+from app.dataset.dataset_generator import DatasetGenerator
+from app.dataset.dataset_schema import PARAMETER_VECTOR_LENGTH
 
 @pytest.fixture
 def temp_dataset_env():
@@ -67,8 +68,9 @@ def test_dataset_generator(temp_dataset_env):
             assert "params" in data
             assert "params_vector" in data
             
-            assert len(data["chain_onehot"]) == 4  # EQ, Comp, Reverb, Delay
-            assert len(data["params_vector"]) == 17  # Fixed parameter vector layout
+            from app.dataset.dataset_schema import CHAIN_ORDER
+            assert len(data["chain_onehot"]) == len(CHAIN_ORDER)  # EQ, Comp, Dist, Chorus, Reverb, Delay
+            assert len(data["params_vector"]) == PARAMETER_VECTOR_LENGTH  # Fixed parameter vector layout
             
             # Check files exist on disk
             assert (output_dir / data["dry_path"]).exists()

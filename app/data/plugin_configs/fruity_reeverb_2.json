@@ -1,0 +1,13 @@
+{
+  "plugin_id": "fruity_reeverb_2",
+  "display_name": "Fruity Reeverb 2",
+  "category": "reverb",
+  "vst_type": "Native",
+  "capabilities": {},
+  "parameter_mapping": {
+    "room_size": { "index": 5, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 1.0 } },
+    "damping": { "index": 1, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 1.0 } },
+    "wet_level": { "index": 3, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.0, "max_phys": 0.4 } },
+    "dry_level": { "index": 4, "type": "float", "range_mapping": { "type": "linear", "min_phys": 0.6, "max_phys": 1.0 } }
+  }
+}
