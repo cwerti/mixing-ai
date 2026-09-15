@@ -60,7 +60,7 @@ def test_ml_dataset_loading(temp_ml_dataset):
     assert isinstance(param_mask, torch.Tensor)
     
     # Проверка размерностей тензоров
-    assert x.shape == (3, 128, 700)
+    assert x.shape == (1, 128, 700)
     assert y_chain.shape == (len(CHAIN_ORDER),)
     assert y_params.shape == (PARAMETER_VECTOR_LENGTH,)
     assert param_mask.shape == (PARAMETER_VECTOR_LENGTH,)

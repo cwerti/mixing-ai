@@ -355,7 +355,7 @@ class AnalysisThread(QThread):
             
             self.progress.emit("Анализ спектра (FFT)...")
             mel_src = processor.get_mel_spectrogram(y_src_norm)
-            mel_ref = processor.get_mel_spectrogram(y_ref_norm)
+            mel_ref = processor.get_mel_spectrogram(y_ref_norm, pitch_normalize=True)
             
             # Дополнение спектрограмм
             max_len = 700
@@ -370,11 +370,9 @@ class AnalysisThread(QThread):
                 
             mel_src_padded = pad_spec(mel_src)
             mel_ref_padded = pad_spec(mel_ref)
-            mel_delta = mel_ref_padded - mel_src_padded
-            
-            # Формирование входного тензора
-            x = np.stack([mel_src_padded, mel_ref_padded, mel_delta], axis=0) # (3, 128, max_len)
-            x_tensor = torch.from_numpy(x).unsqueeze(0) # (1, 3, 128, max_len)
+            # Формирование входного тензора (1 канал: только референс)
+            x = mel_ref_padded[np.newaxis, :, :] # (1, 128, max_len)
+            x_tensor = torch.from_numpy(x).unsqueeze(0) # (1, 1, 128, max_len)
             
             self.progress.emit("Инференс нейросети (512 ResNet)...")
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -441,22 +439,36 @@ class AnalysisThread(QThread):
             # Порог Noise Gate на основе шума
             gate_thresh = processor.estimate_noise_gate_threshold(y_src)
             
+            # Детекция тональности референса для Pitch Corrector
+            self.progress.emit("Определение тональности референса...")
+            enhancer = VocalEnhancer(sr=44100)
+            ref_key, ref_scale = enhancer.detect_key_and_scale(y_ref)
+            print(f"[+] Детектор тональности референса: {ref_key} ({ref_scale})")
+            
             self.progress.emit("Обработка аудио в DSPEngine...")
-            y_processed = dsp.apply_chain(y_src, 44100, chain_config, gate_threshold_db=gate_thresh)
+            y_processed = dsp.apply_chain(
+                y_src, 44100, chain_config, 
+                gate_threshold_db=gate_thresh,
+                target_key_index=ref_key,
+                target_scale=ref_scale
+            )
             
             # Нормализация громкости на выходе
             meter = pyln.Meter(44100)
             try:
-                processed_loudness = meter.integrated_loudness(y_processed)
+                # pyloudnorm ожидает форму (samples, channels) для стерео
+                y_temp = y_processed.T if y_processed.ndim == 2 else y_processed
+                processed_loudness = meter.integrated_loudness(y_temp)
                 if not np.isnan(processed_loudness) and not np.isinf(processed_loudness):
-                    y_processed = pyln.normalize.loudness(y_processed, processed_loudness, -23.0)
+                    y_temp = pyln.normalize.loudness(y_temp, processed_loudness, -23.0)
+                    y_processed = y_temp.T if y_processed.ndim == 2 else y_temp
             except Exception:
                 pass
                 
             # Запись обработанного WAV
             out_audio_path = Path("data/processed/res_gui.wav")
             out_audio_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(out_audio_path, y_processed, 44100)
+            sf.write(out_audio_path, y_processed.T if y_processed.ndim == 2 else y_processed, 44100)
             
             one_liner = eq_gen.generate_one_liner(bands)
             
@@ -482,7 +494,7 @@ class MixingAIApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mixing-AI: Companion")
-        self.setFixedSize(660, 780)
+        self.setFixedSize(660, 920)
         
         # Настройка Frameless (безрамочного) окна
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint)
@@ -686,8 +698,22 @@ class MixingAIApp(QMainWindow):
         for i in reversed(range(self.grid_params.count())): 
             self.grid_params.itemAt(i).widget().setParent(None)
             
-        effects = ["Compressor", "De-esser", "Distortion", "Chorus", "Reverb", "Delay"]
-        for idx, fx in enumerate(effects):
+        # Список отображаемых плагинов с их маппингом из схемы
+        display_map = [
+            ("pitch_corrector", "Pitch Corrector"),
+            ("compressor", "Compressor"),
+            ("deesser", "De-esser"),
+            ("multiband_compressor", "Multiband Comp (OTT)"),
+            ("resonance_suppressor", "Resonance Suppressor"),
+            ("distortion", "Distortion"),
+            ("chorus", "Chorus"),
+            ("stereo_enhancer", "Stereo Enhancer"),
+            ("reverb", "Reverb"),
+            ("delay", "Delay"),
+            ("exciter", "Exciter")
+        ]
+        
+        for idx, (code_name, display_name) in enumerate(display_map):
             r, c = idx // 2, idx % 2
             
             box = QFrame()
@@ -699,7 +725,7 @@ class MixingAIApp(QMainWindow):
             fx_status.setStyleSheet("font-size: 10px;")
             l.addWidget(fx_status)
             
-            fx_name = QLabel(fx)
+            fx_name = QLabel(display_name)
             fx_name.setStyleSheet("font-weight: bold; font-size: 11px; color: #888;")
             l.addWidget(fx_name)
             l.addStretch()
@@ -721,12 +747,17 @@ class MixingAIApp(QMainWindow):
         
         # Список отображаемых плагинов с их маппингом из схемы
         display_map = [
-            ("compressor", "Compressor", "Threshold", "ratio", "дБ", "x"),
-            ("deesser", "De-esser", "Threshold", "ratio", "дБ", "x"),
+            ("pitch_corrector", "Pitch Corrector", "speed", None, "%", ""),
+            ("compressor", "Compressor", "threshold_db", "ratio", "дБ", "x"),
+            ("deesser", "De-esser", "threshold_db", "ratio", "дБ", "x"),
+            ("multiband_compressor", "Multiband Comp (OTT)", "depth", None, "%", ""),
+            ("resonance_suppressor", "Resonance Suppressor", "threshold_db", "max_attenuation_db", "дБ", "дБ"),
             ("distortion", "Distortion", "drive_db", None, "дБ", ""),
             ("chorus", "Chorus", "rate_hz", "mix", "Гц", "%"),
+            ("stereo_enhancer", "Stereo Enhancer", "width", "delay_ms", "x", "мс"),
             ("reverb", "Reverb", "room_size", "wet_level", "", "%"),
-            ("delay", "Delay", "feedback", "mix", "", "%")
+            ("delay", "Delay", "feedback", "mix", "", "%"),
+            ("exciter", "Exciter", "mix", "cutoff_hz", "%", "Гц")
         ]
         
         for idx, (code_name, display_name, param1, param2, unit1, unit2) in enumerate(display_map):
@@ -747,13 +778,19 @@ class MixingAIApp(QMainWindow):
                 
                 val_text = ""
                 if param1 in phys:
-                    val_text += f"{phys[param1]:.1f}{unit1}"
+                    val1 = phys[param1]
+                    if unit1 == "%" and val1 <= 1.0:
+                        val_text += f"{val1*100:.0f}{unit1}"
+                    else:
+                        val_text += f"{val1:.1f}{unit1}"
                 if param2 and param2 in phys:
                     val2 = phys[param2]
                     if unit2 == 'x':
                         val_text += f" | {val2:.2f}{unit2}"
-                    else:
+                    elif unit2 == '%':
                         val_text += f" | {val2*100:.0f}{unit2}"
+                    else:
+                        val_text += f" | {val2:.1f}{unit2}"
                     
                 val_style = "font-size: 11px; color: #fff; font-family: Consolas;"
             else:

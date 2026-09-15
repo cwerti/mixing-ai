@@ -1,0 +1,38 @@
+{
+  "plugin_id": "fruity_pitcher",
+  "display_name": "Pitcher",
+  "category": "Pitch",
+  "vst_type": "Native",
+  "capabilities": {
+    "pitch_correction": true
+  },
+  "parameter_mapping": {
+    "key": {
+      "index": 0,
+      "type": "int",
+      "range_mapping": {
+        "min_phys": 0,
+        "max_phys": 11,
+        "type": "linear"
+      }
+    },
+    "scale": {
+      "index": 1,
+      "type": "int",
+      "range_mapping": {
+        "min_phys": 0,
+        "max_phys": 1,
+        "type": "linear"
+      }
+    },
+    "speed": {
+      "index": 2,
+      "type": "float",
+      "range_mapping": {
+        "min_phys": 0.0,
+        "max_phys": 1.0,
+        "type": "linear"
+      }
+    }
+  }
+}

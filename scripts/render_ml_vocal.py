@@ -58,7 +58,7 @@ def render_vocal(source_path: str | Path, ref_path: str | Path, output_path: str
     
     # 2. Вычисление Мел-спектрограмм
     mel_dry = processor.get_mel_spectrogram(y_src_norm, n_mels=128)
-    mel_wet = processor.get_mel_spectrogram(y_ref_norm, n_mels=128)
+    mel_wet = processor.get_mel_spectrogram(y_ref_norm, n_mels=128, pitch_normalize=True)
     
     # Выравнивание длины спектрограмм
     def pad_spec(mel, length):
@@ -73,8 +73,8 @@ def render_vocal(source_path: str | Path, ref_path: str | Path, output_path: str
     mel_dry_pad = pad_spec(mel_dry, max_len)
     mel_wet_pad = pad_spec(mel_wet, max_len)
     
-    mel_delta_pad = mel_wet_pad - mel_dry_pad
-    x = np.stack([mel_dry_pad, mel_wet_pad, mel_delta_pad], axis=0) # Форма: (3, 128, max_len)
+    # Формирование входного тензора (1 канал: только референс)
+    x = mel_wet_pad[np.newaxis, :, :] # Форма: (1, 128, max_len)
     
     # 3. Запуск предсказания нейросети
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -172,7 +172,17 @@ def render_vocal(source_path: str | Path, ref_path: str | Path, output_path: str
     enhancer = VocalEnhancer(sr=sr)
     y_src_cleaned = enhancer.suppress_resonances(y_src_full, threshold_db=7.0, max_attenuation_db=12.0)
     
-    y_processed = dsp.apply_chain(y_src_cleaned, sr, chain_config, gate_threshold_db=gate_thresh)
+    # Детекция тональности референса для Pitch Corrector
+    print("[*] Определение тональности референсного вокала...")
+    ref_key, ref_scale = enhancer.detect_key_and_scale(y_ref_norm)
+    print(f"[+] Определена тональность референса: {ref_key} ({ref_scale})")
+    
+    y_processed = dsp.apply_chain(
+        y_src_cleaned, sr, chain_config, 
+        gate_threshold_db=gate_thresh,
+        target_key_index=ref_key,
+        target_scale=ref_scale
+    )
     
     y_processed = enhancer.apply_exciter(y_processed, mix=0.12)
     
@@ -180,16 +190,19 @@ def render_vocal(source_path: str | Path, ref_path: str | Path, output_path: str
     import pyloudnorm as pyln
     meter = pyln.Meter(sr)
     try:
-        processed_loudness = meter.integrated_loudness(y_processed)
+        # pyloudnorm ожидает форму (samples, channels) для стерео
+        y_temp = y_processed.T if y_processed.ndim == 2 else y_processed
+        processed_loudness = meter.integrated_loudness(y_temp)
         if not np.isnan(processed_loudness) and not np.isinf(processed_loudness):
-            y_processed = pyln.normalize.loudness(y_processed, processed_loudness, -23.0)
+            y_temp = pyln.normalize.loudness(y_temp, processed_loudness, -23.0)
+            y_processed = y_temp.T if y_processed.ndim == 2 else y_temp
             print("[+] Громкость выходного сигнала нормализована к -23.0 LUFS.")
     except Exception as e:
         print(f"[!] Предупреждение при нормализации громкости: {e}")
         
     # Сохранение результата
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(out_file, y_processed, sr)
+    sf.write(out_file, y_processed.T if y_processed.ndim == 2 else y_processed, sr)
     print(f"[+] Успех! Обработанный вокал успешно сохранен в: {out_file}")
 
 if __name__ == "__main__":

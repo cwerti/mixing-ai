@@ -133,7 +133,7 @@ class DSPEngine:
                     phys_params[p_name] = val
             return phys_params
 
-    def apply_chain(self, y: np.ndarray, sr: int, chain_config: ChainConfig, gate_threshold_db: float = None) -> np.ndarray:
+    def apply_chain(self, y: np.ndarray, sr: int, chain_config: ChainConfig, gate_threshold_db: float = None, target_key_index: int = None, target_scale: str = None) -> np.ndarray:
         """
         Применяет последовательную цепочку плагинов к аудиосигналу.
         
@@ -155,9 +155,13 @@ class DSPEngine:
         # Применение подавления резонансов (если плагин присутствует в цепочке)
         for plugin in chain_config.plugins:
             if plugin.name == "resonance_suppressor":
+                plugin_clamped = self.clamp_normalized_params(plugin)
+                phys = self.get_physical_params(plugin_clamped)
+                t_db = phys.get("threshold_db", 7.0)
+                att_db = phys.get("max_attenuation_db", 12.0)
                 from app.audio.vocal_enhancer import VocalEnhancer
                 enhancer = VocalEnhancer(sr=sr)
-                y_working = enhancer.suppress_resonances(y_working, threshold_db=7.0, max_attenuation_db=12.0)
+                y_working = enhancer.suppress_resonances(y_working, threshold_db=t_db, max_attenuation_db=att_db)
                 break
         
         short_names = {
@@ -246,6 +250,30 @@ class DSPEngine:
                     q=0.707
                 ))
                 
+            elif plugin.name == "pitch_corrector":
+                # Сначала рендерим предыдущие эффекты
+                if effects:
+                    board = Pedalboard(effects)
+                    try:
+                        y_working = board(y_working, sr)
+                    except Exception as e:
+                        print(f"[-] Ошибка обработки Pedalboard перед автотюном: {e}")
+                    effects = []
+                
+                # Если тональность не передана, автодектим тональность исходника, чтобы настроить на самого себя
+                from app.audio.vocal_enhancer import VocalEnhancer
+                enhancer = VocalEnhancer(sr=sr)
+                
+                k_idx = target_key_index
+                s_type = target_scale
+                if k_idx is None or s_type is None:
+                    k_idx, s_type = enhancer.detect_key_and_scale(y_working)
+                    
+                phys = self.get_physical_params(plugin)
+                speed_val = phys.get("speed", 0.85)
+                print(f"[*] Применение Pitch Corrector (Автотюна): {k_idx} ({s_type}), speed={speed_val:.2f}")
+                y_working = enhancer.apply_autotune(y_working, key_index=k_idx, scale=s_type, speed=speed_val)
+                
             elif plugin.name == "compressor" or (vst_loaded is False and plugin.name in ("fabfilter_pro_c_2", "waves_cla_2a")):
                 effects.append(Compressor(
                     threshold_db=phys.get("threshold_db", phys.get("threshold", -20.0)),
@@ -281,6 +309,23 @@ class DSPEngine:
                     y_working = y_low + y_high_compressed
                 except Exception as e:
                     print(f"[-] Ошибка обработки De-esser: {e}")
+                    
+            elif plugin.name == "multiband_compressor":
+                # Сначала рендерим предыдущие эффекты
+                if effects:
+                    board = Pedalboard(effects)
+                    try:
+                        y_working = board(y_working, sr)
+                    except Exception as e:
+                        print(f"[-] Ошибка обработки Pedalboard перед OTT: {e}")
+                    effects = []
+                
+                # Применяем эмулированный OTT-компрессор
+                from app.audio.vocal_enhancer import VocalEnhancer
+                enhancer = VocalEnhancer(sr=sr)
+                phys = self.get_physical_params(plugin)
+                depth_val = phys.get("depth", 0.40)
+                y_working = enhancer.apply_multiband_compressor(y_working, depth=depth_val)
                 
             elif plugin.name == "distortion":
                 # Сначала рендерим предыдущие эффекты, чтобы сохранить порядок цепи
@@ -315,6 +360,24 @@ class DSPEngine:
                     mix=phys.get("mix", 0.5)
                 ))
                 
+            elif plugin.name == "stereo_enhancer":
+                # Сначала рендерим предыдущие эффекты, чтобы они применились в моно
+                if effects:
+                    board = Pedalboard(effects)
+                    try:
+                        y_working = board(y_working, sr)
+                    except Exception as e:
+                        print(f"[-] Ошибка обработки Pedalboard перед стерео-расширителем: {e}")
+                    effects = []
+                
+                # Применяем стерео-расширитель Хааса
+                from app.audio.vocal_enhancer import VocalEnhancer
+                enhancer = VocalEnhancer(sr=sr)
+                phys = self.get_physical_params(plugin)
+                delay_val = phys.get("delay_ms", 18.0)
+                width_val = phys.get("width", 1.0)
+                y_working = enhancer.apply_stereo_enhancer(y_working, delay_ms=delay_val, width=width_val)
+                
             elif plugin.name == "reverb" or (vst_loaded is False and plugin.name == "valhalla_vintage_verb"):
                 wet_val = phys.get("wet_level", phys.get("mix", 0.1))
                 if wet_val > 1.0:
@@ -346,9 +409,13 @@ class DSPEngine:
         # Применение гармонического экситера (если плагин присутствует в цепочке)
         for plugin in chain_config.plugins:
             if plugin.name == "exciter":
+                plugin_clamped = self.clamp_normalized_params(plugin)
+                phys = self.get_physical_params(plugin_clamped)
+                mix_val = phys.get("mix", 0.12)
+                cutoff_hz_val = phys.get("cutoff_hz", 7000.0)
                 from app.audio.vocal_enhancer import VocalEnhancer
                 enhancer = VocalEnhancer(sr=sr)
-                y_working = enhancer.apply_exciter(y_working, mix=0.12)
+                y_working = enhancer.apply_exciter(y_working, cutoff_hz=cutoff_hz_val, mix=mix_val)
                 break
                 
         return y_working

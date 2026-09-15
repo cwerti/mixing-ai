@@ -72,3 +72,55 @@ def test_exciter_generates_harmonics():
     
     # Должен произойти значительный прирост высоких частот за счет сгенерированных гармоник
     assert rms_after > rms_before + 1e-4
+
+def test_stereo_enhancer():
+    """Проверяет корректность расчета стерео-ширины и работу стерео-расширителя Хааса."""
+    sr = 22050
+    enhancer = VocalEnhancer(sr=sr)
+    
+    # 1. Тест моно-сигнала
+    y_mono = np.random.normal(0, 0.1, sr)
+    width_mono = enhancer.measure_stereo_width(y_mono)
+    assert width_mono == 0.0
+    
+    # 2. Тест стерео-расширения
+    # Применяем экситер стерео к моно-сигналу
+    y_stereo = enhancer.apply_stereo_enhancer(y_mono, delay_ms=15.0, width=1.0)
+    
+    # Должна получиться двумерная стерео-матрица (2, n_samples)
+    assert y_stereo.ndim == 2
+    assert y_stereo.shape == (2, len(y_mono))
+    
+    # Левый и правый каналы не должны быть идентичными
+    assert not np.array_equal(y_stereo[0], y_stereo[1])
+    
+    # Измеряем ширину полученного стерео-сигнала
+    width_stereo = enhancer.measure_stereo_width(y_stereo)
+    assert width_stereo > 0.1  # Должна быть зафиксирована стерео-ширина
+
+def test_key_detection_and_ott():
+    """Проверяет детектор тональности и эмуляцию многополосного OTT компрессора."""
+    sr = 22050
+    enhancer = VocalEnhancer(sr=sr)
+    
+    # 1. Тест многополосного компрессора (OTT)
+    y_mono = np.random.normal(0, 0.1, sr)
+    y_ott = enhancer.apply_multiband_compressor(y_mono, depth=0.5)
+    assert y_ott.shape == y_mono.shape
+    
+    # Проверяем на стерео-сигнале
+    y_stereo = np.vstack([y_mono, y_mono * 0.9])
+    y_stereo_ott = enhancer.apply_multiband_compressor(y_stereo, depth=0.5)
+    assert y_stereo_ott.shape == y_stereo.shape
+    
+    # 2. Тест детектора тональности (проверка вызовов без исключений)
+    # Генерируем синусоиду ля-мажор / A4 (440 Гц)
+    t = np.linspace(0, 0.5, sr // 2)
+    y_sine = np.sin(2 * np.pi * 440.0 * t)
+    
+    key, scale = enhancer.detect_key_and_scale(y_sine)
+    assert isinstance(key, int)
+    assert key in range(12)
+    assert scale in ('major', 'minor')
+
+

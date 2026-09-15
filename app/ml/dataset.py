@@ -1,5 +1,6 @@
 import json
 import torch
+import random
 import numpy as np
 from pathlib import Path
 from torch.utils.data import Dataset
@@ -83,11 +84,17 @@ class MixingAIDataset(Dataset):
         mel_dry_padded = self._pad_spectrogram(mel_dry)
         mel_wet_padded = self._pad_spectrogram(mel_wet)
         
-        # Вычисляем разницу спектрограмм (Delta Mel)
-        mel_delta = mel_wet_padded - mel_dry_padded
-        
-        # Конкатенация по каналу ввода (3 канала: Dry, Wet, Delta)
-        x = np.stack([mel_dry_padded, mel_wet_padded, mel_delta], axis=0) # Форма (3, 128, max_len)
+        # Возвращаем только спектрограмму Wet (1 канал)
+        # Аугментация высоты тона (Frequency Roll) для инвариантности к Pitch-Shift (Nightcore / Высокий тон)
+        if random.random() < 0.6:
+            shift = random.randint(-16, 16) # Сдвиг до +-16 бинов (~+-8 полутонов)
+            mel_wet_padded = np.roll(mel_wet_padded, shift, axis=0)
+            if shift > 0:
+                mel_wet_padded[:shift, :] = mel_wet_padded.min()
+            elif shift < 0:
+                mel_wet_padded[shift:, :] = mel_wet_padded.min()
+                
+        x = mel_wet_padded[np.newaxis, :, :] # Форма (1, 128, max_len)
         
         # 3. Подготовка таргетов
         chain_onehot = np.array(sample_data["chain_onehot"], dtype=np.float32)

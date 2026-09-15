@@ -91,14 +91,14 @@ class MixingAIMLPipeline:
         
         # 2. Вычисление Мел-спектрограмм
         mel_dry = self.processor.get_mel_spectrogram(y_src, n_mels=128)
-        mel_wet = self.processor.get_mel_spectrogram(y_ref, n_mels=128)
+        mel_wet = self.processor.get_mel_spectrogram(y_ref, n_mels=128, pitch_normalize=True)
         
         # 3. Выравнивание размеров спектрограмм
         mel_dry_padded = self._pad_spectrogram(mel_dry)
         mel_wet_padded = self._pad_spectrogram(mel_wet)
         
-        # Формирование батч-тензора ввода: форма (1, 2, 128, max_len)
-        x = np.stack([mel_dry_padded, mel_wet_padded], axis=0)
+        # Формирование батч-тензора ввода: форма (1, 1, 128, max_len)
+        x = mel_wet_padded[np.newaxis, :, :]
         x_tensor = torch.from_numpy(x).unsqueeze(0).to(self.device)
         
         # 4. Прогон через модель

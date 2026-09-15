@@ -44,7 +44,7 @@ class MixingAIModel(nn.Module):
         super().__init__()
         
         # Общий кодировщик признаков (ResNet Backbone)
-        self.in_conv = nn.Conv2d(3, 64, kernel_size=3, padding=1, bias=False)
+        self.in_conv = nn.Conv2d(1, 64, kernel_size=3, padding=1, bias=False)
         self.in_bn = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         

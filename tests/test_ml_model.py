@@ -11,8 +11,8 @@ def test_model_forward_pass():
     model = MixingAIModel()
     num_classes = len(CHAIN_ORDER)
     
-    # Генерируем тестовый батч из 2 сэмплов (3 канала, 128 мел-фильтров, 700 фреймов)
-    x = torch.randn(2, 3, 128, 700)
+    # Генерируем тестовый батч из 2 сэмплов (1 канал, 128 мел-фильтров, 700 фреймов)
+    x = torch.randn(2, 1, 128, 700)
     
     # 1. Тест инференса (без передачи маски)
     logits, params = model(x, chain_onehot=None)

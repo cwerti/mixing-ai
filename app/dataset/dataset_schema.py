@@ -4,7 +4,7 @@ import json
 
 # Порядок применения плагинов к аудиосигналу.
 # Фиксированный порядок гарантирует простоту обработки некоммутативности эффектов.
-CHAIN_ORDER = ["eq", "compressor", "deesser", "distortion", "chorus", "reverb", "delay", "resonance_suppressor", "exciter"]
+CHAIN_ORDER = ["eq", "pitch_corrector", "compressor", "deesser", "multiband_compressor", "distortion", "chorus", "stereo_enhancer", "reverb", "delay", "resonance_suppressor", "exciter"]
 
 # Безопасные физические и нормализованные диапазоны параметров плагинов для генерации датасета.
 # Обновлено до 7 полос эквалайзера с акустически перекрывающимися частотными диапазонами.
@@ -78,11 +78,36 @@ DATAGEN_PLUGINS = {
     },
     "resonance_suppressor": {
         "fl_name": "Fruity Limiter (De-res)",
-        "params": {}
+        "params": {
+            "threshold_db": (5.0, 10.0),
+            "max_attenuation_db": (3.0, 15.0),
+        }
     },
     "exciter": {
         "fl_name": "Fruity Fast Dist (Exciter)",
-        "params": {}
+        "params": {
+            "mix": (0.0, 0.3),
+            "cutoff_hz": (6000.0, 10000.0),
+        }
+    },
+    "stereo_enhancer": {
+        "fl_name": "Fruity Stereo Enhancer",
+        "params": {
+            "delay_ms": (5.0, 25.0),
+            "width": (0.0, 1.0),
+        }
+    },
+    "pitch_corrector": {
+        "fl_name": "Pitcher",
+        "params": {
+            "speed": (0.0, 1.0),
+        }
+    },
+    "multiband_compressor": {
+        "fl_name": "Fruity Multiband Compressor",
+        "params": {
+            "depth": (0.0, 1.0),
+        }
     }
 }
 
@@ -94,7 +119,12 @@ PARAM_LAYOUT = {
     "distortion": ["drive_db"],
     "chorus": ["rate_hz", "depth", "feedback", "mix"],
     "reverb": ["room_size", "damping", "wet_level", "dry_level"],
-    "delay": ["delay_seconds", "feedback", "mix"]
+    "delay": ["delay_seconds", "feedback", "mix"],
+    "resonance_suppressor": ["threshold_db", "max_attenuation_db"],
+    "exciter": ["mix", "cutoff_hz"],
+    "stereo_enhancer": ["delay_ms", "width"],
+    "pitch_corrector": ["speed"],
+    "multiband_compressor": ["depth"]
 }
 
 # Динамический расчет смещений и общей длины вектора параметров

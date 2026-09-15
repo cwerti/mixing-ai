@@ -1,0 +1,24 @@
+{
+  "plugin_id": "fruity_multiband_compressor",
+  "display_name": "Fruity Multiband Compressor",
+  "category": "Dynamics",
+  "vst_type": "Native",
+  "capabilities": {
+    "multiband_compression": true
+  },
+  "parameter_mapping": {
+    "limiter": {
+      "index": 0,
+      "type": "bool"
+    },
+    "speed": {
+      "index": 1,
+      "type": "float",
+      "range_mapping": {
+        "min_phys": 0.0,
+        "max_phys": 1.0,
+        "type": "linear"
+      }
+    }
+  }
+}

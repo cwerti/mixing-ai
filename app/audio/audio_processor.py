@@ -75,6 +75,8 @@ class AudioProcessor:
         Returns:
             np.ndarray: Спектральная огибающая вокала.
         """
+        if y.ndim == 2:
+            y = np.mean(y, axis=0)
         S = np.abs(librosa.stft(y, n_fft=n_fft, window=window))
         # Среднее значение по временной шкале
         avg_spectrum = np.mean(S, axis=1)
@@ -82,7 +84,7 @@ class AudioProcessor:
         avg_db = librosa.amplitude_to_db(avg_spectrum, ref=np.max)
         return avg_db
 
-    def get_mel_spectrogram(self, y: np.ndarray, n_fft: int = 2048, hop_length: int = 512, n_mels: int = 128, window: str = 'hann') -> np.ndarray:
+    def get_mel_spectrogram(self, y: np.ndarray, n_fft: int = 2048, hop_length: int = 512, n_mels: int = 128, window: str = 'hann', pitch_normalize: bool = False) -> np.ndarray:
         """
         Вычисляет Мел-спектрограмму в децибелах (dB).
         Максимум нормализуется к 0 dB.
@@ -93,10 +95,32 @@ class AudioProcessor:
             hop_length: Шаг сдвига окна.
             n_mels: Количество Мел-фильтров.
             window: Тип оконной функции.
+            pitch_normalize: Если True, нормализует высоту тона (для Nightcore референсов).
             
         Returns:
             np.ndarray: Мел-спектрограмма.
         """
+        if y.ndim == 2:
+            y = np.mean(y, axis=0)
+            
+        if pitch_normalize:
+            try:
+                f0, _, voiced_prob = librosa.pyin(
+                    y, 
+                    fmin=librosa.note_to_hz('C2'), 
+                    fmax=librosa.note_to_hz('C6'), 
+                    sr=self.sr
+                )
+                valid_f0 = f0[(voiced_prob > 0.4) & ~np.isnan(f0) & (f0 > 0)]
+                if len(valid_f0) > 0:
+                    median_pitch = np.median(valid_f0)
+                    if median_pitch > 310.0:
+                        n_steps = 12.0 * np.log2(220.0 / median_pitch)
+                        print(f"[*] Nightcore-детектор: обнаружен высокий тон ({median_pitch:.1f} Гц). Сдвигаем на {n_steps:.1f} полутонов вниз для анализа.")
+                        y = librosa.effects.pitch_shift(y, sr=self.sr, n_steps=n_steps)
+            except Exception as e:
+                print(f"[!] Ошибка pitch normalization: {e}")
+                
         S = librosa.feature.melspectrogram(
             y=y, sr=self.sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, window=window
         )
@@ -112,6 +136,8 @@ class AudioProcessor:
         Returns:
             dict: Словарь с извлеченными признаками вокала.
         """
+        if y.ndim == 2:
+            y = np.mean(y, axis=0)
         # 1. Спектральный центроид (показывает тембральную яркость)
         centroid = librosa.feature.spectral_centroid(y=y, sr=self.sr)
         mean_centroid = float(np.mean(centroid))
