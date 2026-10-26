@@ -84,8 +84,13 @@ def test_dataset_generator(temp_dataset_env):
             loaded = np.load(npz_path)
             assert "mel_dry" in loaded
             assert "mel_wet" in loaded
-            assert loaded["mel_dry"].shape[0] == 128
-            assert loaded["mel_wet"].shape[0] == 128
+            assert "desc_dry" in loaded
+            assert "desc_wet" in loaded
+            assert loaded["mel_dry"].shape[:2] == (2, 128)
+            assert loaded["mel_wet"].shape[:2] == (2, 128)
+            assert loaded["desc_dry"].shape == (18,)
+            assert loaded["desc_wet"].shape == (18,)
+            assert data.get("split") in ("train", "val")
 
     # Validate stats.json exists
     stats_file = output_dir / "stats.json"

@@ -1,142 +1,69 @@
 import argparse
 import sys
 from pathlib import Path
-import soundfile as sf
-import numpy as np
 
-# Предотвращение сбоев кодировки вывода в консоль Windows
+# Настройка кодировки консоли Windows для предотвращения сбоев вывода
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(errors='replace')
 if hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(errors='replace')
+    sys.stdout.reconfigure(errors='replace')
 
-# Добавление корневой директории в пути импорта Python
+# Добавление корня проекта в пути импорта Python
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.audio.vocal_collector import VocalCollector
 from app.dataset.dataset_generator import DatasetGenerator
 
-def main():
-    """
-    Основная оркестрация CLI-скрипта сборки сырых данных
-    и генерации обучающего датасета.
-    """
-    # Добавление пути FFmpeg из WinGet в PATH
-    try:
-        import os
-        winget_base = Path(os.path.expanduser("~")) / "AppData/Local/Microsoft/WinGet/Packages"
-        if winget_base.exists():
-            ffmpeg_bins = list(winget_base.rglob("ffmpeg.exe"))
-            if ffmpeg_bins:
-                ffmpeg_bin_dir = ffmpeg_bins[0].parent
-                os.environ["PATH"] = str(ffmpeg_bin_dir.absolute()) + os.pathsep + os.environ["PATH"]
-                print(f"[+] FFmpeg добавлен в PATH: {ffmpeg_bin_dir}")
-    except Exception as e:
-        print(f"[!] Предупреждение при поиске FFmpeg: {e}")
 
-    parser = argparse.ArgumentParser(description="Скрипт подготовки датасета Mixing-AI")
-    parser.add_argument("--max-samples", type=int, default=100, help="Максимальное количество сэмплов датасета")
-    parser.add_argument("--output-dir", type=str, default="data/processed/dataset_v1", help="Папка для сохранения датасета")
-    parser.add_argument("--soundcloud-urls", type=str, default="data/raw/soundcloud_urls.txt", help="Файл со ссылками SoundCloud")
-    parser.add_argument("--vctk-dir", type=str, default=None, help="Путь к локальной папке датасета VCTK")
-    parser.add_argument("--vctk-limit", type=int, default=10, help="Лимит нарезаемых файлов VCTK для экономии места")
-    parser.add_argument("--sc-ratio", type=float, default=0.5, help="Пропорция вокала SoundCloud по отношению к VCTK (0.0 - 1.0)")
-    
+def main():
+    parser = argparse.ArgumentParser(description="Генератор датасета вокала для Mixing-AI (на базе Cambridge MT / VCTK)")
+    parser.add_argument("--max-samples", type=int, default=5000, help="Максимальное количество генерируемых сэмплов")
+    parser.add_argument("--output-dir", type=str, default="data/processed/dataset_v1", help="Папка сохранения датасета")
+    parser.add_argument("--vctk-dir", type=str, default=None, help="Путь к локальной папке датасета VCTK (опционально)")
+    parser.add_argument("--vctk-limit", type=int, default=10, help="Лимит нарезаемых файлов VCTK")
+    parser.add_argument("--save-all-wav", action="store_true", help="Сохранять WAV для всех сэмплов (по умолчанию только первые 30)")
+
     args = parser.parse_args()
-    
-    output_dir = Path(args.output_dir)
-    urls_file = Path(args.soundcloud_urls)
-    
+
     raw_dry_dir = Path("data/raw/dry_vocals")
+    output_dir = Path(args.output_dir)
+
     raw_dry_dir.mkdir(parents=True, exist_ok=True)
-    
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     collector = VocalCollector(sr=44100)
 
-    # 1. Обработка локальных файлов VCTK (если указана папка)
-    vctk_dest = raw_dry_dir / "vctk"
+    # 1. Опциональная обработка локального корпуса VCTK
     if args.vctk_dir:
-        vctk_src_dir = Path(args.vctk_dir)
-        if vst_src_dir := vctk_src_dir.exists():
-            print(f"[*] Обработка исходных файлов VCTK из: {vctk_src_dir}...")
-            vctk_wavs = []
-            for ext in ["*.wav", "*.flac"]:
-                candidates = list(vctk_src_dir.rglob(ext))
-                for f in candidates:
-                    f_name_lower = f.name.lower()
-                    parents_lower = [p.name.lower() for p in f.parents]
-                    
-                    # Разрешаем вокальные ключевые слова или файлы из папки vctk
-                    is_vocal = (
-                        any(kw in f_name_lower for kw in ["vocal", "vox", "mic", "sing", "lead", "backing", "voice", "dry"])
-                        or "vctk" in parents_lower
-                    )
-                    
-                    # Исключаем инструменты
-                    is_instrument = any(kw in f_name_lower for kw in [
-                        "kick", "snare", "drum", "guitar", "bass", "synth", "piano", 
-                        "loop", "beat", "instrumental", "organs", "strings", "brass",
-                        "horns", "perc", "ride", "cymbal", "hihat"
-                    ])
-                    
-                    if is_vocal and not is_instrument:
-                        vctk_wavs.append(f)
-                
-            # Выборка случайного подмножества для ограничения дискового пространства
-            if len(vctk_wavs) > args.vctk_limit:
-                import random
-                vctk_wavs = random.sample(vctk_wavs, args.vctk_limit)
-                
-            print(f"[*] Нарезка {len(vctk_wavs)} выбранных файлов VCTK...")
-            vctk_dest.mkdir(parents=True, exist_ok=True)
-            for f_path in vctk_wavs:
-                collector.slice_audio(
-                    audio_path=f_path,
-                    output_dir=vctk_dest,
-                    prefix=f"vctk_{f_path.stem}"
-                )
+        vctk_path = Path(args.vctk_dir)
+        if vctk_path.exists():
+            print(f"[*] Нарезка локальных файлов VCTK из {vctk_path}...")
+            vctk_files = list(vctk_path.glob("**/*.wav")) + list(vctk_path.glob("**/*.flac"))
+            for vf in vctk_files[:args.vctk_limit]:
+                collector.slice_audio(vf, raw_dry_dir / "vctk", prefix=f"vctk_{vf.stem}", target_sec=7.0)
         else:
             print(f"[-] Директория VCTK не найдена: {args.vctk_dir}")
-            
-    # 2. Скачивание и обработка с SoundCloud
-    if urls_file.exists():
-        print("[*] Запуск сбора вокала с SoundCloud...")
-        download_dir = Path("data/raw/soundcloud_raw")
-        downloaded = collector.download_soundcloud(urls_file, download_dir)
-        
-        # Выделение вокала через Demucs и последующая нарезка
-        for f_path in downloaded:
-            separated = collector.separate_vocals(f_path, Path("data/raw/soundcloud_separated"))
-            if separated:
-                collector.slice_audio(
-                    audio_path=separated,
-                    output_dir=raw_dry_dir / "soundcloud",
-                    prefix=f"sc_{f_path.stem}"
-                )
-            
-    # 3. Резервный вариант (Seed): если сухой вокал не найден, нарезаем тестовый файл source.wav
+
+    # 2. Проверка наличия студийного сухого вокала (Cambridge MT / VCTK)
+    cambridge_dest = raw_dry_dir / "cambridge"
+    cambridge_files = list(cambridge_dest.glob("**/*.wav")) if cambridge_dest.exists() else []
+    vctk_dest = raw_dry_dir / "vctk"
     vctk_files = list(vctk_dest.glob("**/*.wav")) if vctk_dest.exists() else []
-    sc_dest = raw_dry_dir / "soundcloud"
-    sc_files = list(sc_dest.glob("**/*.wav")) if sc_dest.exists() else []
-    
-    if not vctk_files and not sc_files:
-        print("[!] В папке data/raw/dry_vocals/ отсутствует сухой вокал.")
-        print("[*] Генерация базовых сегментов из файла data/raw/source/source.wav...")
-        
-        src_wav = Path("data/raw/source/source.wav")
-        if src_wav.exists():
-            vctk_dest.mkdir(parents=True, exist_ok=True)
-            collector.slice_audio(
-                audio_path=src_wav,
-                output_dir=vctk_dest,
-                prefix="vctk_synth_seed"
-            )
+
+    if not cambridge_files and not vctk_files:
+        print("[!] В папке data/raw/dry_vocals/ отсутствует сухой вокал Cambridge/VCTK.")
+        source_fallback = Path("data/raw/source/source.wav")
+        if source_fallback.exists():
+            print("[*] Генерация базовых сегментов из файла data/raw/source/source.wav...")
+            collector.slice_audio(source_fallback, vctk_dest, prefix="local_source", target_sec=6.0)
         else:
-            print("[-] Ошибка: Файл-источник data/raw/source/source.wav не найден. Пожалуйста, добавьте тестовый аудиофайл.")
+            print("[-] Исходный файл data/raw/source/source.wav также не найден.")
             sys.exit(1)
-            
-    # 4. Запуск генерации итогового датасета
+
+    # 3. Запуск генерации итогового датасета (без использования SoundCloud)
     generator = DatasetGenerator(dry_dir=raw_dry_dir, output_dir=output_dir, sr=44100)
-    generator.generate(max_samples=args.max_samples, sc_ratio=args.sc_ratio)
+    generator.generate(max_samples=args.max_samples, save_all_wav=args.save_all_wav)
+
 
 if __name__ == "__main__":
     main()
