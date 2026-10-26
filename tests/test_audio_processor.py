@@ -79,3 +79,24 @@ def test_extract_features(temp_audio_file):
     
     assert features["crest_factor"] > 1.0
     assert features["dynamic_range_db"] >= 0.0
+
+def test_stereo_mel_and_mixing_descriptors(temp_audio_file):
+    processor = AudioProcessor(sr=44100)
+    y_mono = processor.load_audio(temp_audio_file, trim_silence=False)
+    y_stereo = np.vstack([y_mono, np.roll(y_mono, 400) * 0.8])
+
+    stereo_mel = processor.get_stereo_mel_spectrogram(y_stereo, n_mels=128)
+    assert stereo_mel.ndim == 3
+    assert stereo_mel.shape[0] == 2
+    assert stereo_mel.shape[1] == 128
+    assert np.all(stereo_mel >= -1.0) and np.all(stereo_mel <= 1.0)
+
+    desc_mono = processor.extract_mixing_descriptors(y_mono)
+    desc_stereo = processor.extract_mixing_descriptors(y_stereo)
+    assert desc_mono.shape == (18,)
+    assert desc_stereo.shape == (18,)
+    assert np.all(desc_mono >= -1.0) and np.all(desc_mono <= 1.0)
+    assert np.all(desc_stereo >= -1.0) and np.all(desc_stereo <= 1.0)
+    # Стерео-сигнал с задержкой должен иметь большую стерео-ширину (признак 10), чем моно
+    assert desc_stereo[10] > desc_mono[10]
+
