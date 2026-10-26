@@ -51,5 +51,7 @@ data/processed/
 data/raw/
 data/runs/
 data/models/
+data/*.html
+data/*.json
 *.wav
 *.mp3
