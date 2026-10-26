@@ -83,26 +83,31 @@ class VocalEnhancer:
         if len(y) == 0 or mix <= 0.0:
             return y
             
-        # 1. Выделяем высокие частоты с помощью фильтра Баттерворта ВЧ
-        sos_high = signal.butter(4, cutoff_hz, btype='highpass', fs=self.sr, output='sos')
+        # 1. Выделяем высокие частоты выше cutoff_hz с помощью фильтра Баттерворта ВЧ
+        safe_cutoff = float(np.clip(cutoff_hz, 3500.0, self.sr * 0.44))
+        sos_high = signal.butter(4, safe_cutoff, btype='highpass', fs=self.sr, output='sos')
         y_high = signal.sosfilt(sos_high, y)
         
-        # 2. Генерируем новые гармоники нелинейным искажением (кубическая сатурация + tanh)
-        # Это создает новые спектральные составляющие в диапазоне 10-20 кГц
-        y_harmonics = np.tanh(y_high * drive)
+        # 2. Нормализуем ВЧ-полосу перед нелинейным звеном, чтобы сатурация (tanh + четная гармоника)
+        # стабильно работала даже на вокале, нормализованном к -23 LUFS!
+        p98_high = float(np.percentile(np.abs(y_high), 98) + 1e-6)
+        y_high_norm = y_high / p98_high
+        y_harmonics = np.tanh(y_high_norm * (drive * 1.8)) + 0.35 * np.tanh((y_high_norm ** 2) * drive)
         
-        # 3. Фильтруем результат еще раз, чтобы убрать просочившиеся низкие частоты (интермодуляцию)
-        # Оставляем только чистый "воздух" выше 10 кГц
-        sos_air = signal.butter(4, 10000.0, btype='highpass', fs=self.sr, output='sos')
+        # 3. Фильтруем результат выше safe_cutoff, чтобы сохранить явную спектральную границу cutoff_hz
+        # и убрать интермодуляционную грязь в нижней середине
+        sos_air = signal.butter(4, safe_cutoff, btype='highpass', fs=self.sr, output='sos')
         y_air = signal.sosfilt(sos_air, y_harmonics)
         
-        # Нормализуем уровень гармоник по RMS, чтобы микс был предсказуемым
-        rms_orig = np.sqrt(np.mean(y_high**2)) + 1e-8
-        rms_air = np.sqrt(np.mean(y_air**2)) + 1e-8
-        y_air = y_air * (rms_orig / rms_air)
+        # Привязываем уровень сгенерированных гармоник к энергии исходного сигнала
+        rms_full = float(np.sqrt(np.mean(y ** 2)) + 1e-8)
+        rms_orig = float(np.sqrt(np.mean(y_high ** 2)) + 1e-8)
+        rms_air = float(np.sqrt(np.mean(y_air ** 2)) + 1e-8)
+        target_air_rms = max(rms_orig * 2.2, rms_full * 0.28)
+        y_air = y_air * (target_air_rms / rms_air)
         
-        # 4. Смешиваем с исходным сигналом
-        y_excited = y + mix * y_air
+        # 4. Смешиваем с исходным сигналом пропорционально mix
+        y_excited = y + (mix * 1.6) * y_air
         
         return y_excited
 
@@ -207,20 +212,33 @@ class VocalEnhancer:
             return 0, 'minor'
             
         try:
-            # Извлекаем F0 (Pitch) с помощью алгоритма pYIN
-            # Нормализуем пиковую амплитуду для надежного анализа
+            # Извлекаем F0 (Pitch) с помощью быстрого детерминированного алгоритма YIN
             peak_val = np.max(np.abs(y))
             y_detect = y / peak_val if peak_val > 1e-4 else y
             
-            f0, _, voiced_prob = librosa.pyin(
-                y_detect, 
-                fmin=librosa.note_to_hz('C2'), 
-                fmax=librosa.note_to_hz('C6'), 
-                sr=self.sr
+            frame_length = 2048
+            hop_length = 512
+            f0 = librosa.yin(
+                y_detect,
+                fmin=librosa.note_to_hz('C2'),
+                fmax=librosa.note_to_hz('C6'),
+                sr=self.sr,
+                frame_length=frame_length,
+                hop_length=hop_length
             )
-            voiced_flag = (voiced_prob > 0.35)
+            rms = librosa.feature.rms(y=y_detect, frame_length=frame_length, hop_length=hop_length)[0]
+            flatness = librosa.feature.spectral_flatness(y=y_detect, n_fft=frame_length, hop_length=hop_length)[0]
+            min_len = min(len(f0), len(rms), len(flatness))
+            f0 = f0[:min_len]
+            voiced_flag = (
+                (rms[:min_len] > 0.04 * (np.max(rms) + 1e-8))
+                & (flatness[:min_len] < 0.25)
+                & (~np.isnan(f0))
+                & (f0 > librosa.note_to_hz('C2') * 1.03)
+                & (f0 < librosa.note_to_hz('C6') * 0.97)
+            )
             
-            f0_clean = f0[voiced_flag & ~np.isnan(f0)]
+            f0_clean = f0[voiced_flag]
             if len(f0_clean) == 0:
                 return 0, 'minor'
                 
@@ -289,18 +307,23 @@ class VocalEnhancer:
         bands = [y_low, y_mid, y_high]
         compressed_bands = []
         
-        # Параметры компрессии для полос (Low, Mid, High)
-        # Пороги (дБ) и соотношения (Ratios)
-        threshold_down = -20.0  # Нисходящий порог (пики)
-        ratio_down = 4.0
+        # Параметры агрессивной OTT-компрессии по 3 полосам (Low, Mid, High)
+        # Пороги адаптированы под реальное распределение энергии полос при -23 LUFS
+        band_configs = [
+            {"thresh_down": -26.0, "ratio_down": 5.0, "thresh_up": -40.0, "ratio_up": 3.2, "makeup_db": 4.5},
+            {"thresh_down": -22.0, "ratio_down": 4.5, "thresh_up": -34.0, "ratio_up": 3.0, "makeup_db": 2.5},
+            {"thresh_down": -30.0, "ratio_down": 5.5, "thresh_up": -44.0, "ratio_up": 4.0, "makeup_db": 7.5},
+        ]
         
-        threshold_up = -35.0    # Восходящий порог (тихие детали)
-        ratio_up = 2.5          # Коэффициент усиления тихих мест (Upward)
-        
-        for band in bands:
-            # Вычисляем огибающую RMS
-            # Создаем сглаживающее окно 15 мс
-            window_size = int(0.015 * self.sr)
+        for band, b_cfg in zip(bands, band_configs):
+            threshold_down = b_cfg["thresh_down"]
+            ratio_down = b_cfg["ratio_down"]
+            threshold_up = b_cfg["thresh_up"]
+            ratio_up = b_cfg["ratio_up"]
+            makeup_db = b_cfg["makeup_db"]
+
+            # Вычисляем огибающую RMS в окне 12 мс
+            window_size = max(1, int(0.012 * self.sr))
             window = np.ones(window_size) / window_size
             
             # Для стерео берем среднюю огибающую по обоим каналам
@@ -314,18 +337,17 @@ class VocalEnhancer:
             env_db = 20 * np.log10(env + 1e-8)
             
             # Рассчитываем гейн (дБ) для каждого сэмпла
-            gain_db = np.zeros_like(env_db)
+            gain_db = np.full_like(env_db, makeup_db)
             
-            # 1. Downward Compression (сжимаем громкие пики)
+            # 1. Downward Compression (сжимаем громкие пики полосы)
             over_threshold = env_db > threshold_down
             gain_db[over_threshold] += (threshold_down - env_db[over_threshold]) * (1.0 - 1.0 / ratio_down)
             
-            # 2. Upward Compression (вытягиваем тихие хвосты/детали)
+            # 2. Upward Compression (вытягиваем тихие хвосты и ВЧ-воздух в стиле Xfer OTT)
             under_threshold = env_db < threshold_up
-            # Вытаскиваем тихий сигнал с плавным затуханием на абсолютной тишине
-            gate_mask = env_db > -60.0
+            gate_mask = env_db > -58.0
             upward_mask = under_threshold & gate_mask
-            gain_db[upward_mask] += (threshold_up - env_db[upward_mask]) * (ratio_up - 1.0) * 0.15
+            gain_db[upward_mask] += np.minimum(12.0, (threshold_up - env_db[upward_mask]) * (1.0 - 1.0 / ratio_up) * 0.65)
             
             # Переводим гейн в линейный масштаб
             gain_linear = 10 ** (gain_db / 20.0)
@@ -384,13 +406,27 @@ class VocalEnhancer:
         fmin = librosa.note_to_hz('C2')
         fmax = librosa.note_to_hz('C6')
         
-        f0, _, voiced_prob = librosa.pyin(
+        frame_length = 2048
+        hop_length = 512
+        f0 = librosa.yin(
             y_mono_detect, 
             fmin=fmin, 
             fmax=fmax, 
-            sr=self.sr
+            sr=self.sr,
+            frame_length=frame_length,
+            hop_length=hop_length
         )
-        voiced_flag = (voiced_prob > 0.35) & (~np.isnan(f0)) & (f0 > 0)
+        rms = librosa.feature.rms(y=y_mono_detect, frame_length=frame_length, hop_length=hop_length)[0]
+        flatness = librosa.feature.spectral_flatness(y=y_mono_detect, n_fft=frame_length, hop_length=hop_length)[0]
+        min_len = min(len(f0), len(rms), len(flatness))
+        f0 = f0[:min_len]
+        voiced_flag = (
+            (rms[:min_len] > 0.035 * (np.max(rms) + 1e-8))
+            & (flatness[:min_len] < 0.28)
+            & (~np.isnan(f0))
+            & (f0 > fmin * 1.03)
+            & (f0 < fmax * 0.97)
+        )
         
         # 2. Строим целевой контур частоты
         target_pitch = np.copy(f0)
@@ -431,7 +467,6 @@ class VocalEnhancer:
         n_voiced = np.sum(voiced_flag)
         total_f = len(f0)
         pct = (n_voiced / total_f * 100.0) if total_f > 0 else 0.0
-        print(f"[DEBUG] Autotune (PSOLA): detected {n_voiced} voiced frames out of {total_f} ({pct:.1f}%)")
         
         # 3. Синтезируем с помощью PSOLA
         if is_stereo:

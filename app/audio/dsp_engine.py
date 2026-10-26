@@ -1,5 +1,9 @@
 import numpy as np
-from pedalboard import Pedalboard, Compressor, Reverb, Delay, LowShelfFilter, PeakFilter, HighShelfFilter, Chorus, Distortion, HighpassFilter, LowpassFilter, NoiseGate, Limiter
+from pedalboard import (
+    Pedalboard, Compressor, Reverb, Delay, LowShelfFilter, PeakFilter,
+    HighShelfFilter, Chorus, Distortion, HighpassFilter, LowpassFilter,
+    NoiseGate, Limiter, Gain
+)
 from app.dataset.dataset_schema import ChainConfig, PluginConfig, DATAGEN_PLUGINS
 from app.bridge.vst_parameter_mapper import VSTParameterMapper
 
@@ -79,6 +83,7 @@ class DSPEngine:
     def get_physical_params(self, plugin_config: PluginConfig) -> dict:
         """
         Возвращает физические параметры эффекта, преобразованные из нормализованной конфигурации [0..1].
+        Для всех стандартных плагинов схемы использует единый источник диапазонов DATAGEN_PLUGINS.
         
         Args:
             plugin_config: Нормализованная конфигурация плагина.
@@ -87,8 +92,8 @@ class DSPEngine:
             dict: Словарь с физическими параметрами плагина.
         """
         plugin_name = plugin_config.name
-        if plugin_name == "eq":
-            ranges = DATAGEN_PLUGINS["eq"]["params"]
+        if plugin_name in DATAGEN_PLUGINS:
+            ranges = DATAGEN_PLUGINS[plugin_name]["params"]
             phys_params = {}
             for p_name, val in plugin_config.params.items():
                 if p_name in ranges:
@@ -97,6 +102,7 @@ class DSPEngine:
                 else:
                     phys_params[p_name] = val
             return phys_params
+
         short_names = {
             "eq": "fruity_parametric_eq_2",
             "compressor": "fruity_compressor",
@@ -119,21 +125,18 @@ class DSPEngine:
                     phys_params[p_name] = val
             return phys_params
         except Exception as e:
-            # Откат к жестко заданным диапазонам по умолчанию, если маппер недоступен
-            if plugin_name not in DATAGEN_PLUGINS:
-                raise ValueError(f"Плагин '{plugin_name}' не поддерживается DSPEngine или VSTParameterMapper: {e}")
-            
-            ranges = DATAGEN_PLUGINS[plugin_name]["params"]
-            phys_params = {}
-            for p_name, val in plugin_config.params.items():
-                if p_name in ranges:
-                    min_v, max_v = ranges[p_name]
-                    phys_params[p_name] = self.denormalize_value(val, min_v, max_v)
-                else:
-                    phys_params[p_name] = val
-            return phys_params
+            raise ValueError(f"Плагин '{plugin_name}' не поддерживается DSPEngine или VSTParameterMapper: {e}")
 
-    def apply_chain(self, y: np.ndarray, sr: int, chain_config: ChainConfig, gate_threshold_db: float = None, target_key_index: int = None, target_scale: str = None) -> np.ndarray:
+    def apply_chain(
+        self,
+        y: np.ndarray,
+        sr: int,
+        chain_config: ChainConfig,
+        gate_threshold_db: float = None,
+        target_key_index: int = None,
+        target_scale: str = None,
+        apply_safety_clamps: bool = False
+    ) -> np.ndarray:
         """
         Применяет последовательную цепочку плагинов к аудиосигналу.
         
@@ -142,6 +145,10 @@ class DSPEngine:
             sr: Частота дискретизации аудиосигнала.
             chain_config: Конфигурация цепочки плагинов и их параметров.
             gate_threshold_db: Порог Noise Gate в дБ. Если None, гейт не применяется.
+            target_key_index: Индекс тональности (0-11) для Pitch Corrector.
+            target_scale: Лад ('major' или 'minor') для Pitch Corrector.
+            apply_safety_clamps: Применять ли дополнительное ограничение параметров (по умолчанию False,
+                чтобы при генерации датасета звук на 100% соответствовал метке).
             
         Returns:
             np.ndarray: Обработанный аудиосигнал.
@@ -152,11 +159,11 @@ class DSPEngine:
             
         y_working = y.copy()
         
-        # Применение подавления резонансов (если плагин присутствует в цепочке)
+        # Применение подавления резонансов (если плагин явно передан в цепочке)
         for plugin in chain_config.plugins:
             if plugin.name == "resonance_suppressor":
-                plugin_clamped = self.clamp_normalized_params(plugin)
-                phys = self.get_physical_params(plugin_clamped)
+                plugin_used = self.clamp_normalized_params(plugin) if apply_safety_clamps else plugin
+                phys = self.get_physical_params(plugin_used)
                 t_db = phys.get("threshold_db", 7.0)
                 att_db = phys.get("max_attenuation_db", 12.0)
                 from app.audio.vocal_enhancer import VocalEnhancer
@@ -174,7 +181,8 @@ class DSPEngine:
         }
         
         for plugin in chain_config.plugins:
-            plugin = self.clamp_normalized_params(plugin)
+            if apply_safety_clamps:
+                plugin = self.clamp_normalized_params(plugin)
             config_name = short_names.get(plugin.name, plugin.name)
             
             # Попытка загрузить VST3-плагин напрямую через Pedalboard, если настроен маппер
@@ -271,16 +279,22 @@ class DSPEngine:
                     
                 phys = self.get_physical_params(plugin)
                 speed_val = phys.get("speed", 0.85)
-                print(f"[*] Применение Pitch Corrector (Автотюна): {k_idx} ({s_type}), speed={speed_val:.2f}")
                 y_working = enhancer.apply_autotune(y_working, key_index=k_idx, scale=s_type, speed=speed_val)
                 
             elif plugin.name == "compressor" or (vst_loaded is False and plugin.name in ("fabfilter_pro_c_2", "waves_cla_2a")):
+                thresh_val = float(phys.get("threshold_db", phys.get("threshold", -20.0)))
+                ratio_val = float(phys.get("ratio", 4.0))
                 effects.append(Compressor(
-                    threshold_db=phys.get("threshold_db", phys.get("threshold", -20.0)),
-                    ratio=phys.get("ratio", 4.0),
+                    threshold_db=thresh_val,
+                    ratio=ratio_val,
                     attack_ms=phys.get("attack_ms", phys.get("attack", 2.0)),
                     release_ms=phys.get("release_ms", phys.get("release", 100.0))
                 ))
+                # Автоматический частичный Makeup Gain компенсирует потерю пикового уровня,
+                # чтобы порог и степень сжатия однозначно уменьшали Crest Factor!
+                auto_makeup_db = float(np.clip((-10.0 - thresh_val) * (1.0 - 1.0 / max(ratio_val, 1.0)) * 0.45, 0.0, 12.0))
+                if auto_makeup_db > 0.1:
+                    effects.append(Gain(gain_db=auto_makeup_db))
                 
             elif plugin.name == "deesser":
                 # Сначала рендерим предыдущие эффекты
@@ -292,16 +306,20 @@ class DSPEngine:
                         print(f"[-] Ошибка обработки Pedalboard перед деэссером: {e}")
                     effects = []
                 
-                # Реализуем Split-Band De-esser (разделяем полосу на 4 кГц)
-                threshold_db = phys.get("threshold_db", -20.0)
-                ratio = phys.get("ratio", 4.0)
+                # Реализуем Split-Band De-esser (разделяем полосу на 4.2 кГц).
+                # Учитываем, что энергия полосы >4.2 кГц на ~14 дБ ниже широкополосного сигнала (-23 LUFS),
+                # поэтому подаем ВЧ-полосу в детектор с пред-усилением +14 дБ и обратным ослаблением -14 дБ!
+                threshold_db = float(phys.get("threshold_db", -20.0))
+                ratio = float(phys.get("ratio", 4.0))
                 try:
-                    low_board = Pedalboard([LowpassFilter(cutoff_frequency_hz=4000.0)])
+                    low_board = Pedalboard([LowpassFilter(cutoff_frequency_hz=4200.0)])
                     y_low = low_board(y_working, sr)
                     
                     high_board = Pedalboard([
-                        HighpassFilter(cutoff_frequency_hz=4000.0),
-                        Compressor(threshold_db=threshold_db, ratio=ratio, attack_ms=3.0, release_ms=45.0)
+                        HighpassFilter(cutoff_frequency_hz=4200.0),
+                        Gain(gain_db=14.0),
+                        Compressor(threshold_db=threshold_db, ratio=ratio, attack_ms=1.5, release_ms=35.0),
+                        Gain(gain_db=-14.0)
                     ])
                     y_high_compressed = high_board(y_working, sr)
                     
@@ -337,18 +355,20 @@ class DSPEngine:
                         print(f"[-] Ошибка обработки Pedalboard перед дисторшном: {e}")
                     effects = []
                 
-                # Применяем параллельный дисторшн (8% wet, 92% dry)
-                # Отсекаем низ (до 150 Гц) и верх (выше 5000 Гц) на перегруженном сигнале,
+                # Применяем параллельную сатурацию/дисторшн с отчетливо слышимым балансом (22%..38% wet)
+                # Отсекаем низ (до 150 Гц) и ультра-верх (выше 5500 Гц) на перегруженном сигнале,
                 # чтобы убрать свистящий цифровой песок (fizz) и мутный гул.
                 drive_db = phys.get("drive_db", 10.0)
+                norm_drive = float(plugin.params.get("drive_db", 0.5))
+                wet_mix = 0.22 + 0.16 * np.clip(norm_drive, 0.0, 1.0)
                 try:
                     dist_board = Pedalboard([
                         Distortion(drive_db=drive_db),
                         HighpassFilter(cutoff_frequency_hz=150.0),
-                        LowpassFilter(cutoff_frequency_hz=5000.0)
+                        LowpassFilter(cutoff_frequency_hz=5500.0)
                     ])
                     y_dist = dist_board(y_working, sr)
-                    y_working = 0.92 * y_working + 0.08 * y_dist
+                    y_working = (1.0 - wet_mix) * y_working + wet_mix * y_dist
                 except Exception as e:
                     print(f"[-] Ошибка параллельного дисторшна: {e}")
                 
@@ -409,9 +429,9 @@ class DSPEngine:
         # Применение гармонического экситера (если плагин присутствует в цепочке)
         for plugin in chain_config.plugins:
             if plugin.name == "exciter":
-                plugin_clamped = self.clamp_normalized_params(plugin)
-                phys = self.get_physical_params(plugin_clamped)
-                mix_val = phys.get("mix", 0.12)
+                plugin_used = self.clamp_normalized_params(plugin) if apply_safety_clamps else plugin
+                phys = self.get_physical_params(plugin_used)
+                mix_val = phys.get("mix", 0.15)
                 cutoff_hz_val = phys.get("cutoff_hz", 7000.0)
                 from app.audio.vocal_enhancer import VocalEnhancer
                 enhancer = VocalEnhancer(sr=sr)
