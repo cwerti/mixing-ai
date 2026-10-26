@@ -353,36 +353,35 @@ class AnalysisThread(QThread):
             y_src_norm = processor.load_audio(self.source, target_lufs=-23.0, trim_silence=True)
             y_ref_norm = processor.load_audio(self.ref, target_lufs=-23.0, trim_silence=True)
             
-            self.progress.emit("Анализ спектра (FFT)...")
-            mel_src = processor.get_mel_spectrogram(y_src_norm)
-            mel_ref = processor.get_mel_spectrogram(y_ref_norm, pitch_normalize=True)
-            
-            # Дополнение спектрограмм
-            max_len = 700
-            def pad_spec(mel):
-                n_mels, t = mel.shape
+            self.progress.emit("Анализ спектра и физических DSP-дескрипторов...")
+            from app.ml.dataset import MixingAIDataset
+
+            max_len = 520
+            def pad_stereo_spec(mel):
+                c, n_mels, t = mel.shape
                 if t >= max_len:
-                    return mel[:, :max_len]
-                pad_val = mel.min()
-                padded = np.full((n_mels, max_len), pad_val, dtype=np.float32)
-                padded[:, :t] = mel
+                    return mel[:, :, :max_len].astype(np.float32)
+                padded = np.full((c, n_mels, max_len), -1.0, dtype=np.float32)
+                padded[:, :, :t] = mel
                 return padded
-                
-            mel_src_padded = pad_spec(mel_src)
-            mel_ref_padded = pad_spec(mel_ref)
-            # Формирование входного тензора (1 канал: только референс)
-            x = mel_ref_padded[np.newaxis, :, :] # (1, 128, max_len)
-            x_tensor = torch.from_numpy(x).unsqueeze(0) # (1, 1, 128, max_len)
-            
-            self.progress.emit("Инференс нейросети (512 ResNet)...")
+
+            mel_src_padded = pad_stereo_spec(processor.get_stereo_mel_spectrogram(y_src_norm, n_mels=128))
+            mel_ref_padded = pad_stereo_spec(processor.get_stereo_mel_spectrogram(y_ref_norm, n_mels=128, pitch_normalize=True))
+            desc_src = processor.extract_mixing_descriptors(y_src_norm)
+            desc_ref = processor.extract_mixing_descriptors(y_ref_norm)
+
+            x_spec, x_desc = MixingAIDataset.build_model_inputs(mel_src_padded, mel_ref_padded, desc_src, desc_ref)
+            x_tensor = torch.from_numpy(x_spec).unsqueeze(0)
+            x_desc_tensor = torch.from_numpy(x_desc).unsqueeze(0)
+
+            self.progress.emit("Инференс нейросети (Mixing-AI v2 Dual-Input)...")
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = MixingAIModel().to(device)
-            
-            # Загрузка весов с проверкой на размерность для предотвращения сбоев при несовпадении версий моделей
+
             checkpoint = torch.load(self.model_path, map_location=device)
             state_dict = checkpoint["model_state_dict"]
             model_dict = model.state_dict()
-            
+
             filtered_dict = {}
             for k, v in state_dict.items():
                 if k in model_dict and model_dict[k].shape == v.shape:
@@ -392,10 +391,11 @@ class AnalysisThread(QThread):
             model_dict.update(filtered_dict)
             model.load_state_dict(model_dict)
             model.eval()
-            
+
             with torch.no_grad():
                 x_tensor = x_tensor.to(device)
-                logits, pred_params = model(x_tensor)
+                x_desc_tensor = x_desc_tensor.to(device)
+                logits, pred_params = model(x_tensor, None, x_desc_tensor)
                 
                 # Классификация
                 probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
