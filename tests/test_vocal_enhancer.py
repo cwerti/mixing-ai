@@ -49,6 +49,24 @@ def test_suppress_resonances_attenuation():
     # Убеждаемся, что пик на 1500 Гц ослаблен
     assert val_after < val_before * 0.1  # Громкость пика должна упасть как минимум в 10 раз
 
+def test_suppress_resonances_keeps_voice_harmonics():
+    """Проверяет, что гармоники голоса не принимаются за резонансы даже на одной долгой ноте."""
+    sr = 22050
+    enhancer = VocalEnhancer(sr=sr)
+
+    # Худший случай: F0 = 196 Гц держится всю дорожку, гармоники стационарны как резонанс
+    t = np.arange(2 * sr) / sr
+    f0 = 196.0
+    voice = sum(np.sin(2 * np.pi * k * f0 * t) / k for k in range(1, 20))
+    y = 0.3 * voice + np.random.normal(0, 0.005, len(t))
+
+    y_clean = enhancer.suppress_resonances(y, threshold_db=7.0, max_attenuation_db=12.0)
+
+    sos = signal.butter(4, [100, 4000], btype='bandpass', fs=sr, output='sos')
+    energy_before = np.mean(signal.sosfilt(sos, y) ** 2)
+    energy_after = np.mean(signal.sosfilt(sos, y_clean) ** 2)
+    assert 10 * np.log10(energy_after / energy_before) > -1.0  # Тело голоса теряет не больше 1 дБ
+
 def test_exciter_generates_harmonics():
     """Проверяет, что экситер действительно генерирует новые высокие частоты."""
     sr = 44100

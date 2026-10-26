@@ -16,6 +16,7 @@ import numpy as np
 import soundfile as sf
 import librosa
 import pyloudnorm as pyln
+from pedalboard import Limiter, Pedalboard
 
 # Добавление корня проекта в пути импорта Python
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
@@ -220,31 +221,34 @@ def process_vocal(args):
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         print(f"\n[*] Рендеринг обработанного аудио ({output_wav.name})...")
         
-        # Очистка резонансов
-        y_cleaned = enhancer.suppress_resonances(y_src_full, threshold_db=7.0, max_attenuation_db=12.0)
-        
-        # Применение DSP-цепочки
+        # Очистка стационарных резонансов (по каналам: функция работает с моно-сигналом)
+        y_src_stereo, _ = librosa.load(source_file, sr=sr, mono=False)
+        if y_src_stereo.ndim == 1:
+            y_src_stereo = np.vstack([y_src_stereo, y_src_stereo])
+        y_cleaned = np.vstack([
+            enhancer.suppress_resonances(ch, threshold_db=7.0, max_attenuation_db=12.0) for ch in y_src_stereo
+        ])
+
+        # Цепочка рендерится в стерео, чтобы реверб давал ширину, как в референсе
         y_out = dsp.apply_chain(
             y_cleaned, sr, chain_config,
             gate_threshold_db=gate_thresh,
             target_key_index=ref_key,
             target_scale=ref_scale
         )
-        # Легкий вокальный экситер (присутствие и воздух)
-        y_out = enhancer.apply_exciter(y_out, mix=0.10)
 
-        # Нормализация громкости к -23 LUFS
+        # Громкость подгоняем под референс, чтобы A/B сравнение было честным
         meter = pyln.Meter(sr)
-        try:
-            y_temp = y_out.T if y_out.ndim == 2 else y_out
-            loudness = meter.integrated_loudness(y_temp)
-            if not np.isnan(loudness) and not np.isinf(loudness):
-                y_temp = pyln.normalize.loudness(y_temp, loudness, -23.0)
-                y_out = y_temp.T if y_out.ndim == 2 else y_temp
-        except Exception as e:
-            pass
+        ref_full, _ = librosa.load(ref_vocal_path, sr=sr, mono=False)
+        target_lufs = meter.integrated_loudness(ref_full.T if ref_full.ndim == 2 else ref_full)
+        loudness = meter.integrated_loudness(y_out.T)
+        if np.isfinite(loudness) and np.isfinite(target_lufs):
+            y_out = pyln.normalize.loudness(y_out.T, loudness, target_lufs).T
+            # Лимитер срезает пики, но JUCE-лимитер добавляет makeup gain (~+2 дБ), поэтому громкость выравниваем повторно
+            y_out = Pedalboard([Limiter(threshold_db=-1.0, release_ms=50.0)])(y_out.astype(np.float32), sr)
+            y_out = pyln.normalize.loudness(y_out.T, meter.integrated_loudness(y_out.T), target_lufs).T
 
-        sf.write(output_wav, y_out.T if y_out.ndim == 2 else y_out, sr)
+        sf.write(output_wav, y_out.T, sr)
         print(f"[+] ОБРАБОТАННЫЙ АУДИОФАЙЛ СОХРАНЕН:")
         print(f"    --> {output_wav.resolve()}")
 
@@ -266,7 +270,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-fst", type=str, default="data/processed/vocal_mastering.fst", help="Путь сохранения пресета FL Studio")
     parser.add_argument("--output-wav", type=str, default="data/processed/mixed_vocal_preview.wav", help="Путь сохранения WAV превью")
     parser.add_argument("--no-audio-render", action="store_true", help="Отключить генерацию WAV превью (быстрее, только .fst)")
-    parser.add_argument("--max-len", type=int, default=700, help="Длина мел-спектрограммы")
+    parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы (как при обучении)")
 
     args = parser.parse_args()
     process_vocal(args)

@@ -46,25 +46,63 @@ class VocalEnhancer:
         # 2. Вычисляем отношение в дБ
         ratio_db = 20 * np.log10((magnitude + 1e-8) / (smoothed_mag + 1e-8))
         
-        # 3. Находим маску резонансных частот (где отношение превышает порог)
-        resonance_mask = ratio_db > threshold_db
-        
-        # 4. Рассчитываем коэффициенты ослабления для каждого бина
-        attenuation_factors = np.ones_like(magnitude)
-        excess = ratio_db[resonance_mask] - threshold_db
-        attenuation_db = np.minimum(excess, max_attenuation_db)
-        
-        # Переводим дБ в линейный масштаб
-        attenuation_factors[resonance_mask] = 10 ** (-attenuation_db / 20.0)
-        
+        # 3. Резонанс комнаты/микрофона стоит на одной частоте, а гармоники голоса двигаются вместе с нотой
+        # и в покадровом сравнении неотличимы от резонансов. Поэтому кандидатов ищем по долгосрочному
+        # спектру (LTAS) громких кадров: там гармоники размазываются, а стационарные пики остаются.
+        frame_energy = magnitude.sum(axis=0)
+        loud_frames = frame_energy > np.percentile(frame_energy, 40)
+        ltas = magnitude[:, loud_frames].mean(axis=1) if loud_frames.any() else magnitude.mean(axis=1)
+        ltas_smooth = ndimage.median_filter(ltas, size=17, mode='reflect')
+        ltas_ratio_db = 20 * np.log10((ltas + 1e-8) / (ltas_smooth + 1e-8))
+        resonant_bins = ltas_ratio_db > threshold_db * 0.5
+
+        # Если мелодия узкая, гармоники частых нот тоже стационарны в LTAS. Отличаем их по F0:
+        # пик на k * F0 текущего кадра — это голос, а не резонанс.
+        harmonic_mask = self._harmonic_bin_mask(y, ratio_db, n_fft, hop_length)
+
+        # 4. Ослабляем только стационарные негармонические бины в кадрах, где пик реально выпирает
+        resonance_mask = resonant_bins[:, np.newaxis] & (ratio_db > threshold_db) & ~harmonic_mask
+        attenuation_db = np.zeros_like(magnitude)
+        attenuation_db[resonance_mask] = np.minimum(ratio_db[resonance_mask] - threshold_db, max_attenuation_db)
+
+        # Сглаживание по времени (~60 мс), чтобы маска не дрожала от кадра к кадру (иначе слышен хрип)
+        attenuation_db = ndimage.uniform_filter1d(attenuation_db, size=5, axis=1)
+
         # Применяем ослабление к спектру
-        new_magnitude = magnitude * attenuation_factors
+        new_magnitude = magnitude * 10 ** (-attenuation_db / 20.0)
         
         # 5. Восстанавливаем комплексный спектр и делаем обратный STFT
         new_stft = new_magnitude * np.exp(1j * phase)
         y_clean = librosa.istft(new_stft, hop_length=hop_length, length=len(y))
         
         return y_clean
+
+    def _harmonic_bin_mask(self, y: np.ndarray, ratio_db: np.ndarray, n_fft: int, hop_length: int) -> np.ndarray:
+        """
+        Маска бинов STFT, лежащих на гармониках F0 в вокализованных кадрах.
+        Кадр считается вокализованным, если минимум 3 из первых 5 гармоник выступают над огибающей на 6 дБ:
+        одиночный свист на гармонике случайного F0 под это условие не попадает.
+        """
+        n_bins, n_frames = ratio_db.shape
+        f0 = librosa.yin(
+            y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C6'),
+            sr=self.sr, frame_length=n_fft, hop_length=hop_length
+        )[:n_frames]
+        if len(f0) < n_frames:
+            f0 = np.pad(f0, (0, n_frames - len(f0)), mode='edge')
+        f0 = f0.astype(np.float32)
+
+        bin_hz = self.sr / n_fft
+        freqs = (np.arange(n_bins) * bin_hz).astype(np.float32)[:, np.newaxis]
+
+        harmonic_bins = np.clip(np.rint(np.outer(np.arange(1, 6), f0) / bin_hz).astype(int), 0, n_bins - 1)
+        voiced = (ratio_db[harmonic_bins, np.arange(n_frames)] > 6.0).sum(axis=0) >= 3
+
+        harmonic_index = freqs / f0[np.newaxis, :]
+        dist_hz = np.abs(harmonic_index - np.maximum(np.rint(harmonic_index), 1.0)) * f0[np.newaxis, :]
+        # Допуск растет с номером гармоники (джиттер k * dF0), но не шире 20% шага между гармониками
+        tolerance_hz = np.maximum(1.5 * bin_hz, np.minimum(0.03 * freqs, 0.2 * f0[np.newaxis, :]))
+        return (dist_hz <= tolerance_hz) & voiced[np.newaxis, :]
 
     def apply_exciter(self, y: np.ndarray, cutoff_hz: float = 7000.0, drive: float = 2.0, mix: float = 0.15) -> np.ndarray:
         """
@@ -475,8 +513,11 @@ class VocalEnhancer:
             y_tuned = np.vstack([y_tuned_l, y_tuned_r])
         else:
             y_tuned = psola.vocode(y_mono, self.sr, target_pitch=target_pitch, fmin=int(fmin), fmax=int(fmax))
-            
-        return y_tuned
+
+        # PSOLA оставляет инфразвук и гул ниже основного тона (+14 дБ ниже 20 Гц на реальном вокале),
+        # а EQ стоит в цепочке раньше автотюна и уже не может его срезать
+        sos = signal.butter(4, fmin * 0.9, btype='highpass', fs=self.sr, output='sos')
+        return signal.sosfilt(sos, y_tuned, axis=-1)
 
 
 
