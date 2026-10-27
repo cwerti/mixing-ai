@@ -354,23 +354,10 @@ class AnalysisThread(QThread):
             y_ref_norm = processor.load_audio(self.ref, target_lufs=-23.0, trim_silence=True)
             
             self.progress.emit("Анализ спектра и физических DSP-дескрипторов...")
-            from app.ml.dataset import MixingAIDataset
+            from app.ml.features import model_inputs
 
-            max_len = 520
-            def pad_stereo_spec(mel):
-                c, n_mels, t = mel.shape
-                if t >= max_len:
-                    return mel[:, :, :max_len].astype(np.float32)
-                padded = np.full((c, n_mels, max_len), -1.0, dtype=np.float32)
-                padded[:, :, :t] = mel
-                return padded
-
-            mel_src_padded = pad_stereo_spec(processor.get_stereo_mel_spectrogram(y_src_norm, n_mels=128))
-            mel_ref_padded = pad_stereo_spec(processor.get_stereo_mel_spectrogram(y_ref_norm, n_mels=128, pitch_normalize=True))
-            desc_src = processor.extract_mixing_descriptors(y_src_norm)
-            desc_ref = processor.extract_mixing_descriptors(y_ref_norm)
-
-            x_spec, x_desc = MixingAIDataset.build_model_inputs(mel_src_padded, mel_ref_padded, desc_src, desc_ref)
+            x_spec, x_desc = model_inputs(librosa.load(self.source, sr=44100, mono=False)[0],
+                                          librosa.load(self.ref, sr=44100, mono=False)[0], processor)
             x_tensor = torch.from_numpy(x_spec).unsqueeze(0)
             x_desc_tensor = torch.from_numpy(x_desc).unsqueeze(0)
 

@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from app.dataset.dataset_schema import (
     CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH, NUM_DSP_DESCRIPTORS
 )
+from app.ml.features import build_model_inputs
 
 
 class MixingAIDataset(Dataset):
@@ -100,24 +101,7 @@ class MixingAIDataset(Dataset):
             )
         return mel_dry, mel_wet, desc_dry, desc_wet
 
-    @staticmethod
-    def build_model_inputs(
-        mel_src: np.ndarray,
-        mel_ref: np.ndarray,
-        desc_src: np.ndarray,
-        desc_ref: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Собирает входные массивы для MixingAIModel v2:
-          - x_spec: (6, 128, T) -> [mel_src (2), mel_ref (2), (mel_ref - mel_src) / 2.0 (2)]
-          - x_desc: (54,) -> [desc_src (18), desc_ref (18), (desc_ref - desc_src) / 2.0 (18)]
-        """
-        delta_mel = np.clip((mel_ref - mel_src) * 0.5, -1.0, 1.0)
-        x_spec = np.concatenate([mel_src, mel_ref, delta_mel], axis=0).astype(np.float32)
-
-        delta_desc = np.clip((desc_ref - desc_src) * 0.5, -1.0, 1.0)
-        x_desc = np.concatenate([desc_src, desc_ref, delta_desc], axis=0).astype(np.float32)
-        return x_spec, x_desc
+    build_model_inputs = staticmethod(build_model_inputs)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """

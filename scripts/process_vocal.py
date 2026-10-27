@@ -29,6 +29,7 @@ from app.dataset.dataset_schema import (
 from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, to_stereo
 from app.ml.model import MixingAIModel
+from app.ml.features import model_inputs
 from app.ml.pipeline import model_chain, model_params_by_plugin
 from app.presets.full_preset_generator import FullPresetGenerator
 
@@ -119,7 +120,6 @@ def process_vocal(args):
 
     print("\n[*] Загрузка и анализ аудиосигналов...")
     sr = processor.sr
-    y_src_norm = processor.load_audio(source_file, target_lufs=-23.0, trim_silence=True)
     y_ref_norm = processor.load_audio(ref_vocal_path, target_lufs=-23.0, trim_silence=True)
 
     # Детекция тональности референса
@@ -127,23 +127,10 @@ def process_vocal(args):
     key_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     print(f"[+] Распознанная тональность трека: {key_names[ref_key]} {ref_scale}")
 
-    # 3. Вычисление двухканальных Mid/Side Мел-спектрограмм и 18 физических DSP-дескрипторов
-    from app.ml.dataset import MixingAIDataset
-
-    def pad_stereo(mel: np.ndarray, max_len: int) -> np.ndarray:
-        c, n_mels, t = mel.shape
-        if t >= max_len:
-            return mel[:, :, :max_len].astype(np.float32)
-        padded = np.full((c, n_mels, max_len), -1.0, dtype=np.float32)
-        padded[:, :, :t] = mel
-        return padded
-
-    mel_src_padded = pad_stereo(processor.get_stereo_mel_spectrogram(y_src_norm, n_mels=128), args.max_len)
-    mel_ref_padded = pad_stereo(processor.get_stereo_mel_spectrogram(y_ref_norm, n_mels=128, pitch_normalize=True), args.max_len)
-    desc_src = processor.extract_mixing_descriptors(y_src_norm)
-    desc_ref = processor.extract_mixing_descriptors(y_ref_norm)
-
-    x_spec, x_desc = MixingAIDataset.build_model_inputs(mel_src_padded, mel_ref_padded, desc_src, desc_ref)
+    # 3. Входы модели: стерео Mid/Side мел-спектрограммы и 18 DSP-дескрипторов громкого фрагмента
+    #    (та же подготовка, что в генераторе датасета)
+    x_spec, x_desc = model_inputs(librosa.load(source_file, sr=sr, mono=False)[0],
+                                  librosa.load(ref_vocal_path, sr=sr, mono=False)[0], processor, args.max_len)
     x_spec_tensor = torch.from_numpy(x_spec).unsqueeze(0)
     x_desc_tensor = torch.from_numpy(x_desc).unsqueeze(0)
 

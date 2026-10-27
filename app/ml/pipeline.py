@@ -1,6 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
+import librosa
 import torch
 import numpy as np
 
@@ -12,7 +13,7 @@ from app.dataset.dataset_schema import (
     CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, ChainConfig, PluginConfig
 )
 from app.mixing.chain_optimizer import eq_plugin
-from app.ml.dataset import MixingAIDataset
+from app.ml.features import model_inputs
 from app.ml.model import MixingAIModel
 from app.presets.full_preset_generator import FullPresetGenerator
 
@@ -64,28 +65,15 @@ class MixingAIMLPipeline:
         self.model.eval()
         print(f"[+] Модель Mixing-AI v2 загружена на {self.device} (эпоха: {checkpoint.get('epoch', 'N/A')})")
 
-    def _pad_stereo_mel(self, mel: np.ndarray) -> np.ndarray:
-        c, n_mels, t = mel.shape
-        if t >= self.max_len:
-            return mel[:, :, :self.max_len].astype(np.float32)
-        padded = np.full((c, n_mels, self.max_len), -1.0, dtype=np.float32)
-        padded[:, :, :t] = mel
-        return padded
-
-    def predict(self, y_src_norm: np.ndarray, y_ref_norm: np.ndarray) -> tuple[list[str], np.ndarray, np.ndarray]:
+    def predict(self, y_src: np.ndarray, y_ref: np.ndarray) -> tuple[list[str], np.ndarray, np.ndarray]:
         """
-        Выполняет двухвходовой инференс (Source + Reference) и возвращает:
+        Выполняет двухвходовой инференс (Source + Reference) по сигналам любой длины, громкости и канальности
+        (подготовка как в генераторе датасета, см. app/ml/features.py) и возвращает:
           - active_plugins: список имен активных плагинов
           - probs: массив вероятностей по всем плагинам CHAIN_ORDER
           - pred_params_vec: плоский вектор предсказанных параметров [0..1]
         """
-        mel_src = self._pad_stereo_mel(self.processor.get_stereo_mel_spectrogram(y_src_norm, n_mels=128))
-        mel_ref = self._pad_stereo_mel(self.processor.get_stereo_mel_spectrogram(y_ref_norm, n_mels=128, pitch_normalize=True))
-
-        desc_src = self.processor.extract_mixing_descriptors(y_src_norm)
-        desc_ref = self.processor.extract_mixing_descriptors(y_ref_norm)
-
-        x_spec, x_desc = MixingAIDataset.build_model_inputs(mel_src, mel_ref, desc_src, desc_ref)
+        x_spec, x_desc = model_inputs(y_src, y_ref, self.processor, self.max_len)
         x_spec_t = torch.from_numpy(x_spec).unsqueeze(0).to(self.device)
         x_desc_t = torch.from_numpy(x_desc).unsqueeze(0).to(self.device)
 
@@ -100,10 +88,10 @@ class MixingAIMLPipeline:
 
         return active_plugins, probs, pred_params_vec
 
-    def predict_prior(self, y_src_norm: np.ndarray,
-                      y_ref_norm: np.ndarray) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+    def predict_prior(self, y_src: np.ndarray,
+                      y_ref: np.ndarray) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
         """Предсказание в формате ChainOptimizer: вероятности и нормализованные параметры по именам плагинов."""
-        _, probs, pred_params_vec = self.predict(y_src_norm, y_ref_norm)
+        _, probs, pred_params_vec = self.predict(y_src, y_ref)
         return ({name: float(probs[i]) for i, name in enumerate(CHAIN_ORDER)},
                 model_params_by_plugin(pred_params_vec))
 
@@ -113,7 +101,8 @@ class MixingAIMLPipeline:
         y_src = self.processor.load_audio(source_path, target_lufs=-23.0, trim_silence=True)
         y_ref = self.processor.load_audio(ref_path, target_lufs=-23.0, trim_silence=True)
 
-        active_plugins, _, pred_params_vec = self.predict(y_src, y_ref)
+        active_plugins, _, pred_params_vec = self.predict(librosa.load(source_path, sr=self.processor.sr, mono=False)[0],
+                                                          librosa.load(ref_path, sr=self.processor.sr, mono=False)[0])
         print(f"[+] Распознанные активные плагины (вероятность > 50%): {active_plugins}")
 
         matcher = SpectralMatcher(sr=self.processor.sr)
