@@ -519,66 +519,128 @@ class SpectralMatcher:
     Вычисляет разницу спектров сухого вокала и референса и строит
     оптимальную 7-полосную кривую для эквалайзера.
     """
+    # Стартовые центры полос внутри диапазонов DATAGEN_PLUGINS["eq"] без перекрытий.
+    # Тип и добротность совпадают с рендером DSPEngine: полка, 5 колоколов Q=1, полка.
+    BAND_CENTERS_HZ = (90.0, 200.0, 500.0, 1200.0, 3000.0, 6500.0, 10000.0)
+    # Допустимые частоты полос (как в DATAGEN_PLUGINS["eq"], нижняя полка не ниже 40 Гц)
+    BAND_RANGES_HZ = ((40.0, 100.0), (80.0, 350.0), (200.0, 1000.0), (600.0, 3000.0),
+                      (1500.0, 6000.0), (4000.0, 12000.0), (8000.0, 16000.0))
+    FIT_RANGE_HZ = (40.0, 16000.0)
+    MAX_GAIN_DB = 12.0
+    # Полосы не ставятся ближе трети октавы друг к другу, чтобы не компенсировать одна другую
+    MIN_BAND_SPACING = 2.0 ** (1.0 / 3.0)
+
     def __init__(self, sr: int = 44100):
         self.sr = sr
+        self._grid_hz = np.geomspace(*self.FIT_RANGE_HZ, 96)
+        # Ниже 80 Гц у вокала гул, а не тембр: подъем туда не нужен, и эта область почти не влияет на подбор
+        self._weights = np.clip((self._grid_hz / 80.0) ** 2, 0.1, 1.0)
+        self._responses: dict[tuple[int, float], np.ndarray] = {}
+
+    def long_term_spectrum_db(self, y: np.ndarray) -> np.ndarray:
+        """
+        Долгосрочный спектр на логарифмической сетке (1/6 октавы вокруг каждой точки) по активным кадрам:
+        паузы и цифровая тишина не размывают тембр.
+        """
+        mono = np.mean(y, axis=0) if y.ndim == 2 else y
+        power = np.abs(librosa.stft(mono, n_fft=4096, hop_length=1024)) ** 2
+        frame_db = 10.0 * np.log10(power.sum(axis=0) + 1e-12)
+        active = frame_db > np.percentile(frame_db, 95) - 40.0
+        spectrum = power[:, active].mean(axis=1) if active.any() else power.mean(axis=1)
+        freqs = librosa.fft_frequencies(sr=self.sr, n_fft=4096)
+        edge = 2.0 ** (1.0 / 12.0)
+        values = []
+        for f in self._grid_hz:
+            window = (freqs >= f / edge) & (freqs <= f * edge)
+            # На низах окно 1/6 октавы уже бина FFT: тогда берем ближайший бин
+            values.append(spectrum[window].mean() if window.any() else spectrum[np.argmin(np.abs(freqs - f))])
+        return 10.0 * np.log10(np.array(values) + 1e-12)
+
+    def band_response_db(self, band: int, freq: float) -> np.ndarray:
+        """АЧХ полосы при усилении +1 дБ на сетке частот, измеренная импульсом через фильтр pedalboard."""
+        key = (band, round(freq, 1))
+        if key not in self._responses:
+            from pedalboard import HighShelfFilter, LowShelfFilter, PeakFilter
+
+            if band == 0:
+                flt = LowShelfFilter(cutoff_frequency_hz=freq, gain_db=6.0, q=0.707)
+            elif band == 6:
+                flt = HighShelfFilter(cutoff_frequency_hz=freq, gain_db=6.0, q=0.707)
+            else:
+                flt = PeakFilter(cutoff_frequency_hz=freq, gain_db=6.0, q=1.0)
+            impulse = np.zeros((1, 16384), dtype=np.float32)
+            impulse[0, 0] = 1.0
+            freqs = np.fft.rfftfreq(impulse.shape[1], d=1.0 / self.sr)
+            magnitude_db = 20.0 * np.log10(np.abs(np.fft.rfft(flt(impulse, self.sr)[0])) + 1e-12)
+            # Ответ при +6 дБ делим на 6: в рабочем диапазоне усилений он почти линеен по гейну
+            self._responses[key] = np.interp(self._grid_hz, freqs, magnitude_db) / 6.0
+        return self._responses[key]
+
+    def _fit_gains(self, delta: np.ndarray, centers: list[float]) -> tuple[np.ndarray, float]:
+        """
+        Взвешенные наименьшие квадраты: delta ≈ сумма АЧХ полос * гейны + общее смещение громкости
+        (смещение в EQ не попадает). Полосы, упершиеся в предел, фиксируются на пределе и решение пересчитывается.
+
+        Returns:
+            tuple: (гейны полос, взвешенная среднеквадратичная ошибка в дБ^2).
+        """
+        basis = np.array([self.band_response_db(i, f) for i, f in enumerate(centers)])
+        n_bands = basis.shape[0]
+        sqrt_w = np.sqrt(self._weights)
+        design = np.vstack([basis, np.ones_like(self._grid_hz)]).T * sqrt_w[:, np.newaxis]
+        target = delta * sqrt_w
+        ridge = np.diag([0.5] * n_bands + [0.0])
+        active = np.ones(n_bands, dtype=bool)
+        gains = np.zeros(n_bands)
+        offset = 0.0
+        for _ in range(n_bands):
+            fixed = (basis[~active].T @ gains[~active]) * sqrt_w if (~active).any() else 0.0
+            cols = np.append(active, True)
+            a = design[:, cols]
+            solution = np.linalg.solve(a.T @ a + ridge[np.ix_(cols, cols)], a.T @ (target - fixed))
+            gains[active], offset = solution[:-1], solution[-1]
+            over = active & (np.abs(gains) > self.MAX_GAIN_DB)
+            if not over.any():
+                break
+            gains[over] = np.clip(gains[over], -self.MAX_GAIN_DB, self.MAX_GAIN_DB)
+            active &= ~over
+
+        residual = delta - basis.T @ gains - offset
+        return gains, float(np.sum(self._weights * residual ** 2) / np.sum(self._weights))
 
     def match_eq(self, y_dry: np.ndarray, y_ref: np.ndarray) -> list[tuple[float, float]]:
         """
-        Сравнивает спектры y_dry и y_ref и рассчитывает физические частоты и гейны
-        для 7 полос эквалайзера.
-        
+        Подбирает 7-полосный EQ, приближающий долгосрочный спектр y_dry к y_ref.
+        Гейны считаются наименьшими квадратами по реальным АЧХ фильтров, а частоты полос подбираются
+        координатным спуском внутри допустимых диапазонов (2 прохода по 8 кандидатов на полосу).
+
         Returns:
             list[tuple[float, float]]: Список из 7 кортежей (частота_гц, гейн_дб).
         """
-        n_fft = 2048
-        # Вычисление спектрограммы
-        S_dry = np.abs(librosa.stft(y_dry, n_fft=n_fft))
-        S_ref = np.abs(librosa.stft(y_ref, n_fft=n_fft))
-        
-        # Среднее значение по времени
-        avg_dry = np.mean(S_dry, axis=1)
-        avg_ref = np.mean(S_ref, axis=1)
-        
-        # Перевод в децибелы
-        db_dry = 20 * np.log10(avg_dry + 1e-6)
-        db_ref = 20 * np.log10(avg_ref + 1e-6)
-        
-        # Разница АЧХ (Delta)
-        delta = db_ref - db_dry
-        
-        # Центрируем дельту, убирая изменение общей громкости
-        delta = delta - np.mean(delta)
-        
-        freqs = librosa.fft_frequencies(sr=self.sr, n_fft=n_fft)
-        
-        # 7 непересекающихся диапазонов частот эквалайзера
-        bands_ranges = [
-            (10.0, 100.0),
-            (80.0, 350.0),
-            (200.0, 1000.0),
-            (600.0, 3000.0),
-            (1500.0, 6000.0),
-            (4000.0, 12000.0),
-            (8000.0, 20000.0)
-        ]
-        
-        eq_bands = []
-        for flow, fhigh in bands_ranges:
-            indices = np.where((freqs >= flow) & (freqs <= fhigh))[0]
-            if len(indices) == 0:
-                freq = np.sqrt(flow * fhigh)
-                gain = 0.0
-            else:
-                gain = float(np.mean(delta[indices]))
-                # Поиск пиковой частоты в диапазоне
-                peak_idx = indices[np.argmax(np.abs(delta[indices]))]
-                freq = float(freqs[peak_idx])
-                
-            # Ограничение гейна в безопасном диапазоне
-            gain = float(np.clip(gain, -12.0, 12.0))
-            eq_bands.append((freq, gain))
-            
-        return eq_bands
+        return self.fit_eq_to_delta(self.long_term_spectrum_db(y_ref) - self.long_term_spectrum_db(y_dry))
+
+    def eq_curve_db(self, eq_bands: list[tuple[float, float]]) -> np.ndarray:
+        """Суммарная АЧХ эквалайзера на сетке частот."""
+        return sum(gain * self.band_response_db(i, freq) for i, (freq, gain) in enumerate(eq_bands))
+
+    def fit_eq_to_delta(self, delta: np.ndarray) -> list[tuple[float, float]]:
+        """Подбирает полосы EQ под желаемую разницу спектров на сетке частот (см. match_eq)."""
+        centers = list(self.BAND_CENTERS_HZ)
+        gains, best_error = self._fit_gains(delta, centers)
+
+        for _ in range(2):
+            for band, (low, high) in enumerate(self.BAND_RANGES_HZ):
+                for candidate in np.geomspace(low, high, 8):
+                    neighbours = [f for i, f in enumerate(centers) if i != band]
+                    if any(max(candidate, f) / min(candidate, f) < self.MIN_BAND_SPACING for f in neighbours):
+                        continue
+                    trial = centers.copy()
+                    trial[band] = float(candidate)
+                    trial_gains, error = self._fit_gains(delta, trial)
+                    if error < best_error - 1e-6:
+                        centers, gains, best_error = trial, trial_gains, error
+
+        return [(float(f), float(g)) for f, g in zip(centers, gains)]
 
 if __name__ == "__main__":
     processor = AudioProcessor()

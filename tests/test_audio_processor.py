@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import librosa
-from app.audio.audio_processor import AudioProcessor, db_to_amplitude
+from app.audio.audio_processor import AudioProcessor, SpectralMatcher, db_to_amplitude
 
 @pytest.fixture
 def temp_audio_file():
@@ -100,3 +100,49 @@ def test_stereo_mel_and_mixing_descriptors(temp_audio_file):
     # Стерео-сигнал с задержкой должен иметь большую стерео-ширину (признак 10), чем моно
     assert desc_stereo[10] > desc_mono[10]
 
+
+
+def _phrased_noise(sr: int, seconds: float = 6.0, seed: int = 0) -> np.ndarray:
+    """Розовый шум, нарезанный на «фразы» с паузами цифровой тишины."""
+    rng = np.random.default_rng(seed)
+    spectrum = np.fft.rfft(rng.normal(0, 1, int(sr * seconds)))
+    freqs = np.fft.rfftfreq(int(sr * seconds), d=1.0 / sr)
+    pink = np.fft.irfft(spectrum / np.sqrt(np.maximum(freqs, 20.0)), n=int(sr * seconds))
+    gate = (np.arange(len(pink)) // int(0.4 * sr)) % 3 != 2
+    return (0.1 * pink / np.std(pink) * gate).astype(np.float32)
+
+
+def test_match_eq_recovers_known_curve():
+    """EQ, подобранный по паре (сухой, сухой + известный EQ), восстанавливает известные усиления полос."""
+    from pedalboard import HighShelfFilter, LowShelfFilter, PeakFilter, Pedalboard
+
+    sr = 44100
+    matcher = SpectralMatcher(sr=sr)
+    true_gains = [-4.0, 3.0, 0.0, -2.0, 4.0, 0.0, 5.0]
+    centers = SpectralMatcher.BAND_CENTERS_HZ
+    board = Pedalboard(
+        [LowShelfFilter(cutoff_frequency_hz=centers[0], gain_db=true_gains[0], q=0.707)]
+        + [PeakFilter(cutoff_frequency_hz=f, gain_db=g, q=1.0) for f, g in zip(centers[1:6], true_gains[1:6])]
+        + [HighShelfFilter(cutoff_frequency_hz=centers[6], gain_db=true_gains[6], q=0.707)]
+    )
+    dry = _phrased_noise(sr)
+    ref = 0.5 * board(dry[np.newaxis, :], sr)[0]  # другая общая громкость не должна попасть в EQ
+
+    bands = matcher.match_eq(dry, ref)
+
+    # Частоты полос подбираются, поэтому сравниваем итоговую АЧХ EQ, а не гейны по полосам
+    grid = matcher._grid_hz
+    fitted = sum(g * matcher.band_response_db(i, f) for i, (f, g) in enumerate(bands))
+    expected = sum(g * matcher.band_response_db(i, f) for i, (f, g) in enumerate(zip(centers, true_gains)))
+    vocal_range = (grid >= 100) & (grid <= 12000)
+    error = (fitted - expected)[vocal_range]
+    assert np.max(np.abs(error - error.mean())) < 1.0  # общий сдвиг громкости в EQ не входит
+    assert all(low <= f <= high for (f, _), (low, high) in zip(bands, SpectralMatcher.BAND_RANGES_HZ))
+
+
+def test_match_eq_flat_for_identical_signals():
+    """Для одинаковых сигналов EQ остается плоским."""
+    sr = 44100
+    dry = _phrased_noise(sr)
+    bands = SpectralMatcher(sr=sr).match_eq(dry, dry.copy())
+    assert all(abs(gain) < 0.5 for _, gain in bands)
