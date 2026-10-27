@@ -51,16 +51,6 @@ def load_stereo(path: str | Path, sr: int, seconds: float | None = None) -> np.n
     return select_excerpt(y, sr, seconds) if seconds else y
 
 
-def model_view(y: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Сигнал в том виде, в каком его получает модель в process_vocal.py (AudioProcessor.load_audio):
-    моно, без тишины по краям, -23 LUFS.
-    """
-    mono = librosa.to_mono(to_stereo(y))
-    mono, _ = librosa.effects.trim(mono, top_db=60.0)
-    return normalize_lufs(mono, sr, -23.0)
-
-
 def make_case(name: str, dry_src: np.ndarray, dry_ref: np.ndarray, chain: ChainConfig, sr: int,
               enhancer: VocalEnhancer | None = None) -> BenchmarkCase:
     """Синтетическая пара: референс = chain(dry_ref), тональность для автотюна берется из голоса референса."""
@@ -73,11 +63,10 @@ def make_case(name: str, dry_src: np.ndarray, dry_ref: np.ndarray, chain: ChainC
 
 
 def _song_groups(files: list[Path]) -> dict[str, list[Path]]:
-    """Группирует файлы по песне тем же ключом, что и DatasetGenerator._split_files_by_group."""
+    """Группирует файлы по песне тем же ключом, что и при разбиении датасета на train/val."""
     groups: dict[str, list[Path]] = {}
     for f in sorted(files):
-        parts = f.stem.split("_")
-        groups.setdefault("_".join(parts[:2]) if len(parts) >= 2 else f.stem, []).append(f)
+        groups.setdefault(DatasetGenerator.song_key(f), []).append(f)
     return groups
 
 
@@ -144,7 +133,7 @@ class ChainBenchmark:
                  log: Callable[[str], None] = print):
         """
         Args:
-            prior: Функция (y_src_norm, y_ref_norm) -> (model_probs, model_params),
+            prior: Функция (y_src, y_ref) -> (model_probs, model_params) по сырым сигналам,
                 например MixingAIMLPipeline.predict_prior. Без нее режимы с моделью пропускаются.
             with_pitch: Учитывать ли отклонение от нот (pyin медленный).
         """
@@ -204,7 +193,7 @@ class ChainBenchmark:
 
         model_probs = model_params = None
         if self.prior is not None and any(m.startswith("model") for m in modes):
-            model_probs, model_params = self.prior(model_view(case.src, self.sr), model_view(case.ref, self.sr))
+            model_probs, model_params = self.prior(case.src, case.ref)
 
         optimizer = ChainOptimizer(sr=self.sr, log=lambda _: None)
         for mode in modes:

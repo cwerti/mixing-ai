@@ -21,6 +21,9 @@ def main():
     parser.add_argument("--output-dir", type=str, default="data/processed/dataset_v1", help="Папка сохранения датасета")
     parser.add_argument("--vctk-dir", type=str, default=None, help="Путь к локальной папке датасета VCTK (опционально)")
     parser.add_argument("--vctk-limit", type=int, default=10, help="Лимит нарезаемых файлов VCTK")
+    parser.add_argument("--cross-ratio", type=float, default=1.0,
+                        help="Доля пар, где референс — другой голос другой песни (1.0 = как в реальной задаче)")
+    parser.add_argument("--seed", type=int, default=0, help="Seed выбора файлов, пар и цепочек")
     parser.add_argument("--save-all-wav", action="store_true", help="Сохранять WAV для всех сэмплов (по умолчанию только первые 30)")
 
     args = parser.parse_args()
@@ -62,7 +65,8 @@ def main():
 
     # 3. Запуск генерации итогового датасета (без использования SoundCloud)
     generator = DatasetGenerator(dry_dir=raw_dry_dir, output_dir=output_dir, sr=44100)
-    generator.generate(max_samples=args.max_samples, save_all_wav=args.save_all_wav)
+    generator.generate(max_samples=args.max_samples, save_all_wav=args.save_all_wav,
+                       cross_ratio=args.cross_ratio, seed=args.seed)
 
 
 if __name__ == "__main__":

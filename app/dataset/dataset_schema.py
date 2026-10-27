@@ -179,6 +179,9 @@ class DatasetSample:
     params: Dict[str, Dict[str, float]]
     params_vector: List[float]
     split: str = "train"
+    # Исходные сухие файлы исходника и референса (у датасета v1 совпадают и не записаны)
+    src_file: str = ""
+    ref_file: str = ""
 
     def to_jsonl_line(self) -> str:
         """Сериализует объект сэмпла в строку JSONL."""

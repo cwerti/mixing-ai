@@ -2,6 +2,7 @@ import os
 import random
 import json
 from typing import List, Dict, Tuple
+import librosa
 import numpy as np
 import soundfile as sf
 import scipy.signal as signal
@@ -14,6 +15,8 @@ from app.dataset.dataset_schema import (
 )
 from app.audio.dsp_engine import DSPEngine
 from app.audio.audio_processor import AudioProcessor
+from app.mixing.chain_optimizer import normalize_lufs, to_stereo
+from app.ml.features import MODEL_LUFS, signal_features, window_seconds
 
 
 def _generate_balanced_random_config(rng: random.Random = random) -> ChainConfig:
@@ -188,6 +191,25 @@ class DatasetGenerator:
         return vec
 
     @staticmethod
+    def song_key(f: Path) -> str:
+        """Ключ песни/вокалиста: префикс из двух первых частей имени файла."""
+        parts = f.stem.split("_")
+        return "_".join(parts[:2]) if len(parts) >= 2 else f.stem
+
+    @staticmethod
+    def _pick_reference_file(pool: List[Path], src_file: Path, cross_ratio: float, rng: random.Random) -> Path:
+        """
+        Выбирает файл, из которого рендерится референс. С вероятностью cross_ratio — другой голос из другой
+        песни того же сплита (как в реальной задаче), иначе — тот же файл (референс из того же фрагмента).
+        """
+        if rng.random() >= cross_ratio:
+            return src_file
+        src_key = DatasetGenerator.song_key(src_file)
+        others = ([f for f in pool if DatasetGenerator.song_key(f) != src_key]
+                  or [f for f in pool if f != src_file] or [src_file])
+        return rng.choice(others)
+
+    @staticmethod
     def _split_files_by_group(files: List[Path], val_ratio: float = 0.15) -> Tuple[List[Path], List[Path]]:
         """
         Разделяет список исходных файлов на train и val по песне/вокалисту (префикс файла или родительская папка),
@@ -198,9 +220,7 @@ class DatasetGenerator:
 
         groups: Dict[str, List[Path]] = {}
         for f in sorted(files):
-            parts = f.stem.split("_")
-            group_key = "_".join(parts[:2]) if len(parts) >= 2 else f.stem
-            groups.setdefault(group_key, []).append(f)
+            groups.setdefault(DatasetGenerator.song_key(f), []).append(f)
 
         group_keys = sorted(groups.keys())
         rng = random.Random(42)
@@ -227,10 +247,17 @@ class DatasetGenerator:
             val_files = train_files[:1]
         return train_files, val_files
 
-    def generate(self, max_samples: int = 1000, sc_ratio: float = 0.0, save_all_wav: bool = False) -> List[DatasetSample]:
+    def generate(self, max_samples: int = 1000, sc_ratio: float = 0.0, save_all_wav: bool = False,
+                 cross_ratio: float = 1.0, seed: int = 0) -> List[DatasetSample]:
         """
         Запускает параллельную генерацию датасета на всех ядрах CPU (без использования SoundCloud).
+
+        Args:
+            cross_ratio: Доля пар, где референс рендерится из другого голоса другой песни (реальная задача);
+                остальные пары — референс из того же фрагмента, что и исходник (поведение датасета v1).
+            seed: Seed выбора файлов, пар и цепочек.
         """
+        task_rng = random.Random(seed)
         dry_out_dir = self.output_dir / "audio" / "dry"
         wet_out_dir = self.output_dir / "audio" / "wet"
         features_out_dir = self.output_dir / "features"
@@ -288,13 +315,15 @@ class DatasetGenerator:
 
         for i in range(max_samples):
             split_name = "train" if i < n_train_samples else "val"
-            src_type = random.choice(source_keys)
+            src_type = task_rng.choice(source_keys)
             tr_pool, val_pool = source_splits[src_type]
             pool = tr_pool if split_name == "train" else val_pool
-            src_file = random.choice(pool)
+            src_file = task_rng.choice(pool)
+            ref_file = self._pick_reference_file(pool, src_file, cross_ratio, task_rng)
             # Сохраняем WAV для первых 50 сэмплов (или для всех при малом тесте max_samples <= 50)
             write_wav = save_all_wav or (max_samples <= 50) or (i < 30)
-            tasks.append((i, src_file, src_type, split_name, self.sr, str(self.output_dir), write_wav))
+            tasks.append((i, src_file, ref_file, src_type, split_name, self.sr, str(self.output_dir), write_wav,
+                          seed))
 
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
@@ -318,6 +347,7 @@ class DatasetGenerator:
             "train_samples": sum(1 for s in samples if s.split == "train"),
             "val_samples": sum(1 for s in samples if s.split == "val"),
             "sr": self.sr,
+            "cross_ratio": cross_ratio,
             "chain_order": CHAIN_ORDER,
             "param_layout": PARAM_LAYOUT
         }
@@ -328,11 +358,33 @@ class DatasetGenerator:
         return samples
 
 
+def _load_chunk(path: Path, sr: int, seconds: float, rng: random.Random) -> np.ndarray:
+    """
+    Стерео-фрагмент (2, N) заданной длины на уровне MODEL_LUFS: самый громкий из 4 случайных окон файла
+    без тишины по краям; короткий файл дополняется тишиной.
+    """
+    y, _ = librosa.load(path, sr=sr, mono=False)
+    y = to_stereo(y)
+    _, (start, end) = librosa.effects.trim(librosa.to_mono(y), top_db=60.0)
+    y = y[:, start:end]
+
+    n = int(seconds * sr)
+    if y.shape[1] > n:
+        starts = [rng.randint(0, y.shape[1] - n) for _ in range(4)]
+        best = max(starts, key=lambda s0: float(np.mean(y[:, s0:s0 + n] ** 2)))
+        y = y[:, best:best + n]
+    elif y.shape[1] < n:
+        y = np.pad(y, ((0, 0), (0, n - y.shape[1])))
+    return normalize_lufs(y, sr, MODEL_LUFS)
+
+
 def _generate_sample_worker(task) -> str | None:
     """
     Автономный воркер генерации одного сэмпла (Dry/Wet + Mid/Side Mel + 18 DSP дескрипторов).
+    Исходник — фрагмент src_file, референс — цепочка, примененная к фрагменту ref_file (другой голос при
+    cross-парах). Оба сигнала стерео и подготовлены так же, как на инференсе (app/ml/features.py).
     """
-    idx, src_file, source_name, split_name, sr, output_dir_str, write_wav = task
+    idx, src_file, ref_file, source_name, split_name, sr, output_dir_str, write_wav, seed = task
 
     import warnings
     warnings.filterwarnings("ignore")
@@ -344,39 +396,22 @@ def _generate_sample_worker(task) -> str | None:
 
     audio_processor = AudioProcessor(sr=sr)
     dsp = DSPEngine()
-    rng = random.Random(100000 + idx * 7919)
+    rng = random.Random(100000 + seed * 1000003 + idx * 7919)
 
     try:
-        # 1. Загрузка и LUFS-нормализация сухого сигнала
-        y_dry = audio_processor.load_audio(src_file, target_lufs=-23.0, trim_silence=True)
-
-        # Оптимизация длины: 6.0 секунд (~517 мел-фреймов) — быстрее в рендере и богато по фразам
-        duration = 6.0
-        target_samples = int(duration * sr)
-        if len(y_dry) > target_samples:
-            max_offset = len(y_dry) - target_samples
-            best_start = rng.randint(0, max_offset)
-            best_rms = -1.0
-            for _ in range(4):
-                start = rng.randint(0, max_offset)
-                chunk = y_dry[start : start + target_samples]
-                rms = float(np.sqrt(np.mean(chunk ** 2)))
-                if rms > best_rms:
-                    best_rms = rms
-                    best_start = start
-            y_dry = y_dry[best_start : best_start + target_samples]
-        elif len(y_dry) < target_samples:
-            pad_width = target_samples - len(y_dry)
-            y_dry = np.pad(y_dry, (0, pad_width), mode='constant')
+        # 1. Фрагменты длиной в окно модели (~6 с, 520 мел-кадров) на -23 LUFS
+        duration = window_seconds(sr)
+        y_dry = _load_chunk(src_file, sr, duration, rng)
+        y_ref_dry = y_dry if ref_file == src_file else _load_chunk(ref_file, sr, duration, rng)
 
         # 2. Генерация сбалансированной цепочки плагинов и честных параметров
         chain = _generate_balanced_random_config(rng)
 
-        # 3. Оффлайн-рендеринг сигнала БЕЗ скрытого обрезания параметров (apply_safety_clamps=False)
+        # 3. Оффлайн-рендеринг в стерео (реверб дает ширину) БЕЗ скрытого обрезания параметров
         rand_key = rng.randint(0, 11)
         rand_scale = rng.choice(["major", "minor"])
         y_wet = dsp.apply_chain(
-            y_dry,
+            y_ref_dry,
             sr,
             chain,
             target_key_index=rand_key,
@@ -390,6 +425,8 @@ def _generate_sample_worker(task) -> str | None:
             cutoff_demucs = rng.uniform(15500.0, 18000.0)
             sos_lp = signal.butter(4, cutoff_demucs, btype='lowpass', fs=sr, output='sos')
             y_wet_for_features = signal.sosfilt(sos_lp, y_wet).astype(np.float32)
+        # Референс на инференсе нормализуется к -23 LUFS, поэтому и признаки считаются на этом уровне
+        y_wet_for_features = normalize_lufs(y_wet_for_features, sr, MODEL_LUFS)
 
         # 4. Опциональное сохранение аудиофайлов на диск
         sample_id = f"{idx:06d}"
@@ -404,16 +441,15 @@ def _generate_sample_worker(task) -> str | None:
             sf.write(wet_path, y_wet.T if y_wet.ndim == 2 else y_wet, sr)
 
         # 5. Извлечение двухканальных Mid/Side Мел-спектрограмм (2, 128, T) и 18 физических DSP-признаков
-        mel_dry = audio_processor.get_stereo_mel_spectrogram(y_dry, n_mels=128)
-        mel_wet = audio_processor.get_stereo_mel_spectrogram(y_wet_for_features, n_mels=128)
-        desc_dry = audio_processor.extract_mixing_descriptors(y_dry)
-        desc_wet = audio_processor.extract_mixing_descriptors(y_wet_for_features)
+        mel_dry, desc_dry = signal_features(y_dry, audio_processor)
+        mel_wet, desc_wet = signal_features(y_wet_for_features, audio_processor)
 
+        # Мел-спектрограммы в [-1, 1] хранятся в float16: точности хватает, а датасет вдвое меньше
         feature_file = features_out_dir / f"{sample_id}.npz"
         np.savez_compressed(
             feature_file,
-            mel_dry=mel_dry,
-            mel_wet=mel_wet,
+            mel_dry=mel_dry.astype(np.float16),
+            mel_wet=mel_wet.astype(np.float16),
             desc_dry=desc_dry,
             desc_wet=desc_wet
         )
@@ -443,7 +479,9 @@ def _generate_sample_worker(task) -> str | None:
             chain_onehot=chain_onehot,
             params=params_dict,
             params_vector=flat_vector,
-            split=split_name
+            split=split_name,
+            src_file=str(src_file),
+            ref_file=str(ref_file)
         )
         return sample.to_jsonl_line()
     except Exception as e:
