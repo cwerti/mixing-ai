@@ -227,10 +227,44 @@ class AudioProcessor:
         Returns:
             np.ndarray: Вектор из 18 признаков (float32) в диапазоне [-1.0, 1.0].
         """
-        import scipy.signal as signal
+        raw = self.raw_mixing_descriptors(y)
+        if raw is None:
+            return np.zeros(18, dtype=np.float32)
 
         def norm_range(val: float, low: float, high: float) -> float:
             return float(np.clip(2.0 * (val - low) / (max(high - low, 1e-8)) - 1.0, -1.0, 1.0))
+
+        return np.array([
+            norm_range(raw["crest_db"], 4.0, 24.0),
+            norm_range(raw["dr_p95_p10_db"], 2.0, 28.0),
+            norm_range(raw["dr_p99_p90_db"], 0.3, 8.0),
+            norm_range(raw["rms_std_db"], 1.0, 10.0),
+            norm_range(raw["env_mod_rate_db"], 0.3, 4.5),
+            norm_range(raw["sib_p90_db"], -24.0, 4.0),
+            norm_range(raw["air_ratio_db"], -42.0, -6.0),
+            norm_range(raw["highmid_ratio_db"], -22.0, 8.0),
+            norm_range(raw["flatness_db"], -28.0, -4.0),
+            norm_range(raw["hf_centroid_hz"], 5500.0, 12500.0),
+            norm_range(raw["width_global"], 0.0, 0.8),
+            norm_range(raw["width_high"], 0.0, 0.85),
+            norm_range(raw["haas_lag_ms"], 0.0, 26.0),
+            norm_range(raw["decorrelation"], 0.0, 0.5),
+            norm_range(raw["reverb_tail_db"], -32.0, -4.0),
+            norm_range(raw["delay_peak"], 0.02, 0.45),
+            norm_range(raw["delay_lag_sec"], 0.08, 0.50),
+            # Меньше центов отклонения -> ближе к +1.0 (сильный автотюн), больше центов -> ближе к -1.0 (живое вибрато)
+            -norm_range(raw["pitch_median_cents"], 3.0, 25.0),
+        ], dtype=np.float32)
+
+    def raw_mixing_descriptors(self, y: np.ndarray) -> dict | None:
+        """
+        Физические величины, из которых строятся 18 дескрипторов модели (дБ, Гц, мс, центы), без нормировки.
+        Используются и для входов модели, и для метрики стиля (app/eval/style_metrics.py).
+
+        Returns:
+            dict | None: Словарь величин или None, если сигнал слишком короткий или тихий.
+        """
+        import scipy.signal as signal
 
         if y.ndim == 2:
             if y.shape[0] == 2:
@@ -251,7 +285,7 @@ class AudioProcessor:
             is_stereo = False
 
         if len(mid) < 2048 or np.max(np.abs(mid)) < 1e-6:
-            return np.zeros(18, dtype=np.float32)
+            return None
 
         # 1-5: Динамика и компрессия (Compressor / Multiband OTT)
         frame_len = 1024
@@ -269,12 +303,6 @@ class AudioProcessor:
         dr_p99_p90 = float(np.percentile(active_rms_db, 99) - np.percentile(active_rms_db, 90))
         rms_std = float(np.std(active_rms_db))
         env_mod_rate = float(np.mean(np.abs(np.diff(active_rms_db)))) if len(active_rms_db) > 1 else 0.0
-
-        f1_crest = norm_range(crest_db, 4.0, 24.0)
-        f2_dr = norm_range(dr_p95_p10, 2.0, 28.0)
-        f3_trans = norm_range(dr_p99_p90, 0.3, 8.0)
-        f4_rms_std = norm_range(rms_std, 1.0, 10.0)
-        f5_env_mod = norm_range(env_mod_rate, 0.3, 4.5)
 
         # 6-10: Спектр, сибилянты, сатурация и экситер (De-esser / Distortion / Exciter / OTT)
         stft_mag = np.abs(librosa.stft(mid, n_fft=2048, hop_length=512))
@@ -310,12 +338,6 @@ class AudioProcessor:
         hf_power = np.mean(stft_mag[hf_mask, :] ** 2, axis=1) + 1e-12
         hf_centroid_hz = float(np.sum(freqs[hf_mask] * hf_power) / np.sum(hf_power))
 
-        f6_sib = norm_range(sib_p90_db, -24.0, 4.0)
-        f7_air = norm_range(air_ratio_db, -42.0, -6.0)
-        f8_hmid = norm_range(highmid_ratio_db, -22.0, 8.0)
-        f9_flat = norm_range(flatness_db, -28.0, -4.0)
-        f10_crest_hb = norm_range(hf_centroid_hz, 5500.0, 12500.0)
-
         # 11-14: Стерео-ширина, задержка Хааса и фазовая декорреляция (Stereo Enhancer / Chorus / Reverb)
         if is_stereo and np.max(np.abs(side)) > 1e-6:
             rms_m = float(np.sqrt(np.mean(mid ** 2)) + 1e-8)
@@ -348,11 +370,6 @@ class AudioProcessor:
             lag_ms = 0.0
             decorrelation = 0.0
 
-        f11_w_glob = norm_range(width_global, 0.0, 0.8)
-        f12_w_high = norm_range(width_high, 0.0, 0.85)
-        f13_haas_lag = norm_range(lag_ms, 0.0, 26.0)
-        f14_decorr = norm_range(decorrelation, 0.0, 0.5)
-
         # 15-17: Пространство, хвост реверберации и эхо дилея (Reverb / Delay)
         # Оценка энергии хвостов после спадов фраз (переход из активного вокала в паузу)
         diffs_db = np.diff(rms_db)
@@ -378,10 +395,6 @@ class AudioProcessor:
         else:
             delay_peak = 0.0
             delay_lag_sec = 0.08
-
-        f15_rev_tail = norm_range(reverb_tail_db, -32.0, -4.0)
-        f16_dly_peak = norm_range(delay_peak, 0.02, 0.45)
-        f17_dly_lag = norm_range(delay_lag_sec, 0.08, 0.50)
 
         # 18: Квантование высоты тона F0 к полутоновой сетке в центах (Pitch Corrector)
         try:
@@ -413,15 +426,26 @@ class AudioProcessor:
         except Exception:
             median_cents = 20.0
 
-        # Меньше центов отклонения -> ближе к +1.0 (сильный автотюн), больше центов -> ближе к -1.0 (живое вибрато)
-        f18_pitch_quant = -norm_range(median_cents, 3.0, 25.0)
-
-        return np.array([
-            f1_crest, f2_dr, f3_trans, f4_rms_std, f5_env_mod,
-            f6_sib, f7_air, f8_hmid, f9_flat, f10_crest_hb,
-            f11_w_glob, f12_w_high, f13_haas_lag, f14_decorr,
-            f15_rev_tail, f16_dly_peak, f17_dly_lag, f18_pitch_quant
-        ], dtype=np.float32)
+        return {
+            "crest_db": crest_db,
+            "dr_p95_p10_db": dr_p95_p10,
+            "dr_p99_p90_db": dr_p99_p90,
+            "rms_std_db": rms_std,
+            "env_mod_rate_db": env_mod_rate,
+            "sib_p90_db": sib_p90_db,
+            "air_ratio_db": air_ratio_db,
+            "highmid_ratio_db": highmid_ratio_db,
+            "flatness_db": flatness_db,
+            "hf_centroid_hz": hf_centroid_hz,
+            "width_global": width_global,
+            "width_high": width_high,
+            "haas_lag_ms": lag_ms,
+            "decorrelation": decorrelation,
+            "reverb_tail_db": reverb_tail_db,
+            "delay_peak": delay_peak,
+            "delay_lag_sec": delay_lag_sec,
+            "pitch_median_cents": median_cents,
+        }
 
     def extract_features(self, y: np.ndarray) -> dict:
         """
