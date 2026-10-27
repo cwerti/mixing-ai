@@ -16,7 +16,6 @@ import numpy as np
 import soundfile as sf
 import librosa
 import pyloudnorm as pyln
-from pedalboard import Limiter, Pedalboard
 
 # Добавление корня проекта в пути импорта Python
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
@@ -27,6 +26,8 @@ from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
     CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, ChainConfig, PluginConfig
 )
+from app.eval.style_metrics import extract_style_features, style_distance
+from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, eq_plugin, normalize_lufs, to_stereo
 from app.ml.model import MixingAIModel
 from app.presets.full_preset_generator import FullPresetGenerator
 
@@ -65,6 +66,37 @@ def extract_vocal_stem(reference_mix_path: Path, output_dir: Path) -> Path:
             
     print(f"[+] Вокал успешно изолирован: {isolated_vocals}")
     return isolated_vocals
+
+def model_params_by_plugin(pred_params_vec: np.ndarray) -> dict[str, dict[str, float]]:
+    """Раскладывает плоский вектор параметров модели по плагинам (нормализованные значения [0..1])."""
+    return {
+        plugin: {p: float(pred_params_vec[PARAM_OFFSETS[plugin] + i]) for i, p in enumerate(layout)}
+        for plugin, layout in PARAM_LAYOUT.items()
+    }
+
+
+def model_chain(plugins: list[str], eq_bands: list[tuple[float, float]],
+                model_params: dict[str, dict[str, float]]) -> ChainConfig:
+    """Цепочка «как предсказала модель» (режим --no-optimize) с защитными лимитами пространственных эффектов."""
+    limits = {("chorus", "depth"): 0.20, ("distortion", "drive_db"): 0.35,
+              ("reverb", "wet_level"): 0.40, ("delay", "mix"): 0.45}
+    chain = ChainConfig(plugins=[eq_plugin(eq_bands)])
+    for plugin in plugins:
+        params = {p: min(v, limits.get((plugin, p), 1.0)) for p, v in model_params[plugin].items()}
+        chain.plugins.append(PluginConfig(name=plugin, params=params))
+    return chain
+
+
+def print_chain(chain: ChainConfig):
+    """Печатает цепочку в физических единицах."""
+    print("\n[*] Итоговая цепочка:")
+    for plugin in chain.plugins:
+        ranges = DATAGEN_PLUGINS[plugin.name]["params"]
+        values = ", ".join(
+            f"{p}={ranges[p][0] + v * (ranges[p][1] - ranges[p][0]):.2f}" for p, v in plugin.params.items()
+        )
+        print(f"    [{plugin.name.upper()}] {values}")
+
 
 def process_vocal(args):
     source_file = Path(args.source)
@@ -105,7 +137,7 @@ def process_vocal(args):
     enhancer = VocalEnhancer(sr=44100)
 
     print("\n[*] Загрузка и анализ аудиосигналов...")
-    y_src_full, sr = librosa.load(source_file, sr=44100)
+    sr = processor.sr
     y_src_norm = processor.load_audio(source_file, target_lufs=-23.0, trim_silence=True)
     y_ref_norm = processor.load_audio(ref_vocal_path, target_lufs=-23.0, trim_silence=True)
 
@@ -113,10 +145,6 @@ def process_vocal(args):
     ref_key, ref_scale = enhancer.detect_key_and_scale(y_ref_norm)
     key_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     print(f"[+] Распознанная тональность трека: {key_names[ref_key]} {ref_scale}")
-
-    # Порог Noise Gate
-    gate_thresh = processor.estimate_noise_gate_threshold(y_src_full)
-    print(f"[+] Оптимальный порог Noise Gate: {gate_thresh:.1f} дБ")
 
     # 3. Вычисление двухканальных Mid/Side Мел-спектрограмм и 18 физических DSP-дескрипторов
     from app.ml.dataset import MixingAIDataset
@@ -156,51 +184,32 @@ def process_vocal(args):
         probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
         pred_params_vec = pred_params.squeeze(0).cpu().numpy()
 
-    # Активные плагины
-    active_plugins = [CHAIN_ORDER[i] for i, prob in enumerate(probs) if prob > 0.5]
-    if "eq" not in active_plugins:
-        active_plugins.insert(0, "eq")
-    print(f"[+] Активированная цепочка эффектов: {active_plugins}")
+    model_probs = {name: float(probs[i]) for i, name in enumerate(CHAIN_ORDER)}
+    model_params = model_params_by_plugin(pred_params_vec)
+    model_plugins = [name for name in CHAIN_ORDER if name != "eq" and model_probs[name] > 0.5]
+    print(f"[+] Цепочка, предложенная моделью: {model_plugins}")
 
-    # 5. Математический расчет EQ (Spectral Matching)
-    matcher = SpectralMatcher(sr=sr)
-    eq_bands = matcher.match_eq(y_src_norm, y_ref_norm)
-    print("\n[*] Расчет 7-полосного Fruity Parametric EQ 2:")
-    for idx, (f, g) in enumerate(eq_bands):
-        print(f"    Полоса {idx+1}: {f:6.1f} Гц | {g:+5.2f} дБ")
+    # 5. Сухой вокал подается в цепочку на том же уровне, что и при генерации датасета:
+    # пороги компрессора, де-эссера и дисторшна в DATAGEN_PLUGINS рассчитаны на -23 LUFS
+    y_src_chain = normalize_lufs(to_stereo(librosa.load(source_file, sr=sr, mono=False)[0]), sr, CHAIN_INPUT_LUFS)
+    y_ref_full, _ = librosa.load(ref_vocal_path, sr=sr, mono=False)
+    gate_thresh = processor.estimate_noise_gate_threshold(librosa.to_mono(y_src_chain))
+    print(f"[+] Оптимальный порог Noise Gate: {gate_thresh:.1f} дБ")
 
-    # 6. Реконструкция физических параметров плагинов
-    chain_config = ChainConfig()
-    print("\n[*] Предсказанные параметры плагинов:")
-    for plugin_name in active_plugins:
-        plugin_params = {}
-        if plugin_name == "eq":
-            for i, (f, g) in enumerate(eq_bands):
-                min_f, max_f = DATAGEN_PLUGINS["eq"]["params"][f"band{i+1}_freq_hz"]
-                min_g, max_g = DATAGEN_PLUGINS["eq"]["params"][f"band{i+1}_gain_db"]
-                f_norm = (f - min_f) / (max_f - min_f) if (max_f - min_f) != 0 else 0.0
-                g_norm = (g - min_g) / (max_g - min_g) if (max_g - min_g) != 0 else 0.0
-                plugin_params[f"band{i+1}_freq_hz"] = float(np.clip(f_norm, 0.0, 1.0))
-                plugin_params[f"band{i+1}_gain_db"] = float(np.clip(g_norm, 0.0, 1.0))
-        elif plugin_name in PARAM_OFFSETS:
-            layout = PARAM_LAYOUT[plugin_name]
-            offset = PARAM_OFFSETS[plugin_name]
-            ranges = DATAGEN_PLUGINS[plugin_name]["params"]
-            for idx, p_name in enumerate(layout):
-                val = float(pred_params_vec[offset + idx])
-                # Плавные защитные лимиты для деликатного сведения
-                if plugin_name == "chorus" and p_name == "depth": val = min(val, 0.20)
-                elif plugin_name == "distortion" and p_name == "drive_db": val = min(val, 0.35)
-                elif plugin_name == "reverb" and p_name == "wet_level": val = min(val, 0.40)
-                elif plugin_name == "delay" and p_name == "mix": val = min(val, 0.45)
-                plugin_params[p_name] = val
-                
-                # Физическое значение для вывода в консоль
-                min_v, max_v = ranges[p_name]
-                phys_v = min_v + val * (max_v - min_v)
-                print(f"    [{plugin_name.upper()}] {p_name}: {phys_v:.2f}")
-
-        chain_config.plugins.append(PluginConfig(name=plugin_name, params=plugin_params))
+    # 6. Подбор цепочки: модель дает начальное приближение, оптимизатор подгоняет звук под референс
+    if args.no_optimize:
+        eq_bands = SpectralMatcher(sr=sr).match_eq(y_src_chain, y_ref_full)
+        chain_config = model_chain(model_plugins, eq_bands, model_params)
+    else:
+        print(f"\n[*] Подбор цепочки по референсу (бюджет {args.budget:.0f} с)...")
+        result = ChainOptimizer(sr=sr).optimize(
+            y_src_chain, y_ref_full,
+            model_probs=model_probs, model_params=model_params,
+            key_index=ref_key, scale=ref_scale,
+            gate_threshold_db=gate_thresh, budget_s=args.budget,
+        )
+        chain_config, eq_bands = result.chain, result.eq_bands
+    print_chain(chain_config)
 
     # 7. Генерация нативного .fst пресета
     output_fst.parent.mkdir(parents=True, exist_ok=True)
@@ -222,11 +231,8 @@ def process_vocal(args):
         print(f"\n[*] Рендеринг обработанного аудио ({output_wav.name})...")
         
         # Очистка стационарных резонансов (по каналам: функция работает с моно-сигналом)
-        y_src_stereo, _ = librosa.load(source_file, sr=sr, mono=False)
-        if y_src_stereo.ndim == 1:
-            y_src_stereo = np.vstack([y_src_stereo, y_src_stereo])
         y_cleaned = np.vstack([
-            enhancer.suppress_resonances(ch, threshold_db=7.0, max_attenuation_db=12.0) for ch in y_src_stereo
+            enhancer.suppress_resonances(ch, threshold_db=7.0, max_attenuation_db=12.0) for ch in y_src_chain
         ])
 
         # Цепочка рендерится в стерео, чтобы реверб давал ширину, как в референсе
@@ -239,18 +245,26 @@ def process_vocal(args):
 
         # Громкость подгоняем под референс, чтобы A/B сравнение было честным
         meter = pyln.Meter(sr)
-        ref_full, _ = librosa.load(ref_vocal_path, sr=sr, mono=False)
-        target_lufs = meter.integrated_loudness(ref_full.T if ref_full.ndim == 2 else ref_full)
+        target_lufs = meter.integrated_loudness(y_ref_full.T if y_ref_full.ndim == 2 else y_ref_full)
         loudness = meter.integrated_loudness(y_out.T)
         if np.isfinite(loudness) and np.isfinite(target_lufs):
             y_out = pyln.normalize.loudness(y_out.T, loudness, target_lufs).T
-            # Лимитер срезает пики, но JUCE-лимитер добавляет makeup gain (~+2 дБ), поэтому громкость выравниваем повторно
-            y_out = Pedalboard([Limiter(threshold_db=-1.0, release_ms=50.0)])(y_out.astype(np.float32), sr)
-            y_out = pyln.normalize.loudness(y_out.T, meter.integrated_loudness(y_out.T), target_lufs).T
+            # Вместо лимитера опускаем весь сигнал, если пики вылезли за 0 дБ: лимитер давит пики (у вокала
+            # они в середине) и смещает тембр на 1-1.5 дБ, а общий гейн тембр не меняет
+            peak = float(np.max(np.abs(y_out)))
+            if peak > 0.99:
+                y_out = y_out * (0.99 / peak)
 
         sf.write(output_wav, y_out.T, sr)
         print(f"[+] ОБРАБОТАННЫЙ АУДИОФАЙЛ СОХРАНЕН:")
         print(f"    --> {output_wav.resolve()}")
+
+        ref_features = extract_style_features(y_ref_full, sr, with_pitch=False)
+        distance_out, per_feature = style_distance(extract_style_features(y_out, sr, with_pitch=False), ref_features)
+        distance_src, _ = style_distance(extract_style_features(y_src_chain, sr, with_pitch=False), ref_features)
+        worst = ", ".join(f"{k} {v:+.1f}" for k, v in sorted(per_feature.items(), key=lambda kv: -abs(kv[1]))[:3])
+        print(f"[+] Расстояние по стилю до референса (весь трек): исходник {distance_src:.2f} -> результат "
+              f"{distance_out:.2f}; сильнее всего отличается: {worst}")
 
     print("\n=========================================================")
     print("                 СВЕДЕНИЕ УСПЕШНО ЗАВЕРШЕНО!            ")
@@ -271,6 +285,8 @@ if __name__ == "__main__":
     parser.add_argument("--output-wav", type=str, default="data/processed/mixed_vocal_preview.wav", help="Путь сохранения WAV превью")
     parser.add_argument("--no-audio-render", action="store_true", help="Отключить генерацию WAV превью (быстрее, только .fst)")
     parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы (как при обучении)")
+    parser.add_argument("--no-optimize", action="store_true", help="Использовать цепочку модели без подбора по референсу")
+    parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
 
     args = parser.parse_args()
     process_vocal(args)
