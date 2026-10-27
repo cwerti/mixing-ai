@@ -32,6 +32,7 @@ datasets = "^5.0.0"
 tensorboard = "^2.21.0"
 psola = "^0.0.1"
 fastapi = "^0.140.8"
+cma = "^4.5.0"
 
 
 [build-system]
