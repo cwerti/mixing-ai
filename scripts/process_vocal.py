@@ -24,11 +24,12 @@ from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, ChainConfig, PluginConfig
+    CHAIN_ORDER, DATAGEN_PLUGINS, ChainConfig
 )
 from app.eval.style_metrics import extract_style_features, style_distance
-from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, eq_plugin, normalize_lufs, to_stereo
+from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, to_stereo
 from app.ml.model import MixingAIModel
+from app.ml.pipeline import model_chain, model_params_by_plugin
 from app.presets.full_preset_generator import FullPresetGenerator
 
 def extract_vocal_stem(reference_mix_path: Path, output_dir: Path) -> Path:
@@ -66,26 +67,6 @@ def extract_vocal_stem(reference_mix_path: Path, output_dir: Path) -> Path:
             
     print(f"[+] Вокал успешно изолирован: {isolated_vocals}")
     return isolated_vocals
-
-def model_params_by_plugin(pred_params_vec: np.ndarray) -> dict[str, dict[str, float]]:
-    """Раскладывает плоский вектор параметров модели по плагинам (нормализованные значения [0..1])."""
-    return {
-        plugin: {p: float(pred_params_vec[PARAM_OFFSETS[plugin] + i]) for i, p in enumerate(layout)}
-        for plugin, layout in PARAM_LAYOUT.items()
-    }
-
-
-def model_chain(plugins: list[str], eq_bands: list[tuple[float, float]],
-                model_params: dict[str, dict[str, float]]) -> ChainConfig:
-    """Цепочка «как предсказала модель» (режим --no-optimize) с защитными лимитами пространственных эффектов."""
-    limits = {("chorus", "depth"): 0.20, ("distortion", "drive_db"): 0.35,
-              ("reverb", "wet_level"): 0.40, ("delay", "mix"): 0.45}
-    chain = ChainConfig(plugins=[eq_plugin(eq_bands)])
-    for plugin in plugins:
-        params = {p: min(v, limits.get((plugin, p), 1.0)) for p, v in model_params[plugin].items()}
-        chain.plugins.append(PluginConfig(name=plugin, params=params))
-    return chain
-
 
 def print_chain(chain: ChainConfig):
     """Печатает цепочку в физических единицах."""

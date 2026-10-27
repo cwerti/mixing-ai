@@ -52,6 +52,8 @@ class OptimizationResult:
     distance_prior: float | None
     distance_final: float
     report: list[str] = field(default_factory=list)
+    # Сходимость CMA-ES: (число рендеров, лучшая целевая функция на этот момент) после каждого поколения
+    history: list[tuple[int, float]] = field(default_factory=list)
 
 
 def normalize_lufs(y: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
@@ -266,6 +268,7 @@ class ChainOptimizer:
             return self._distance(y, ref_features) + self.intensity_penalty * self._intensity(params)
 
         best_score = objective(current)
+        history = [(1, best_score)]
         if layout:
             x0 = [current[p][k] for p, k in layout]
             options = {"bounds": [0.0, 1.0], "seed": seed + 1, "verbose": -9, "maxfevals": 2000}
@@ -277,6 +280,7 @@ class ChainOptimizer:
                 scores = [objective(unpack(x)) for x in candidates]
                 es.tell(candidates, scores)
                 evaluations += len(candidates)
+                history.append((evaluations + 1, min(best_score, es.result.fbest)))
             if es.result.fbest < best_score:
                 best_score = es.result.fbest
                 current = unpack(es.result.xbest)
@@ -320,4 +324,4 @@ class ChainOptimizer:
              + (f", модель {distance_prior:.2f}" if distance_prior is not None else "")
              + f", подбор {distance_final:.2f}")
         return OptimizationResult(chain, eq_bands, pitch_speed, distance_source, distance_prior,
-                                  distance_final, report)
+                                  distance_final, report, history)

@@ -9,11 +9,32 @@ sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS
+    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, ChainConfig, PluginConfig
 )
+from app.mixing.chain_optimizer import eq_plugin
 from app.ml.dataset import MixingAIDataset
 from app.ml.model import MixingAIModel
 from app.presets.full_preset_generator import FullPresetGenerator
+
+
+def model_params_by_plugin(pred_params_vec: np.ndarray) -> dict[str, dict[str, float]]:
+    """Раскладывает плоский вектор параметров модели по плагинам (нормализованные значения [0..1])."""
+    return {
+        plugin: {p: float(pred_params_vec[PARAM_OFFSETS[plugin] + i]) for i, p in enumerate(layout)}
+        for plugin, layout in PARAM_LAYOUT.items()
+    }
+
+
+def model_chain(plugins: list[str], eq_bands: list[tuple[float, float]],
+                model_params: dict[str, dict[str, float]]) -> ChainConfig:
+    """Цепочка «как предсказала модель» (режим --no-optimize) с защитными лимитами пространственных эффектов."""
+    limits = {("chorus", "depth"): 0.20, ("distortion", "drive_db"): 0.35,
+              ("reverb", "wet_level"): 0.40, ("delay", "mix"): 0.45}
+    chain = ChainConfig(plugins=[eq_plugin(eq_bands)])
+    for plugin in plugins:
+        params = {p: min(v, limits.get((plugin, p), 1.0)) for p, v in model_params[plugin].items()}
+        chain.plugins.append(PluginConfig(name=plugin, params=params))
+    return chain
 
 
 class MixingAIMLPipeline:
@@ -78,6 +99,13 @@ class MixingAIMLPipeline:
             active_plugins.insert(0, "eq")
 
         return active_plugins, probs, pred_params_vec
+
+    def predict_prior(self, y_src_norm: np.ndarray,
+                      y_ref_norm: np.ndarray) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+        """Предсказание в формате ChainOptimizer: вероятности и нормализованные параметры по именам плагинов."""
+        _, probs, pred_params_vec = self.predict(y_src_norm, y_ref_norm)
+        return ({name: float(probs[i]) for i, name in enumerate(CHAIN_ORDER)},
+                model_params_by_plugin(pred_params_vec))
 
     def run(self, source_path: str | Path, ref_path: str | Path, output_preset_name: str = "mixing_ai_predicted.fst") -> Path | None:
         print(f"\n[*] Запуск инференса модели для:\n  Dry: {source_path}\n  Ref: {ref_path}")
