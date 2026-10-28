@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.dataset.dataset_schema import ChainConfig, PluginConfig
-from app.eval.benchmark import ChainBenchmark, make_case, renders_to_fraction, summarize
+from app.eval.benchmark import ChainBenchmark, make_case, renders_to_fraction, renders_to_level, summarize
 from app.mixing.chain_optimizer import physical_to_normalized
 from synthetic_audio import synthetic_vocal
 
@@ -58,3 +58,16 @@ def test_summarize_head_to_head():
     summary = summarize(rows)
     assert "лучше 1, хуже 0, вничью (±0.05) 1 из 2" in summary
     assert "| optimizer | 2 | 2.10 |" in summary
+
+
+def test_summarize_speed_to_optimizer_level():
+    """Ускорение считается по рендерам до итогового уровня optimizer на той же паре."""
+    rows = [
+        {"case": "a", "seed": 0, "mode": "optimizer", "distance": 2.0, "renders_to_90": 40, "seconds": 60,
+         "history": [(1, 4.0), (100, 2.5), (200, 2.0)]},
+        {"case": "a", "seed": 0, "mode": "model+optimizer", "distance": 2.0, "renders_to_90": 20, "seconds": 60,
+         "history": [(2, 2.6), (50, 2.01), (200, 1.9)]},
+    ]
+    assert renders_to_level(rows[1]["history"], 2.02) == 50
+    assert renders_to_level(rows[1]["history"], 1.0) is None
+    assert "дошел в 1 из 1 за 50 рендеров, ускорение 4.0x" in summarize(rows)

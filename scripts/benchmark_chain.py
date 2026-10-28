@@ -57,13 +57,14 @@ def main(args):
         for case in cases:
             for i, seed in enumerate(args.seeds):
                 for row in bench.run_case(case, modes, budget_s=args.budget, seed=seed, audio_dir=audio_dir,
-                                          with_baselines=i == 0):
+                                          with_baselines=i == 0, patience_renders=args.patience):
                     rows.append(row)
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
                     f.flush()
 
     summary = summarize(rows)
     config = (f"Пар: {len(cases)}, seeds: {args.seeds}, бюджет CMA-ES: {args.budget:.0f} с, "
+              f"ранняя остановка: {args.patience or 'нет'}, "
               f"фрагмент: {args.seconds:.0f} с, тюн в метрике: {not args.no_pitch}")
     (out_dir / "summary.md").write_text(f"# Бенчмарк цепочки\n\n{config}\n\n{summary}\n", encoding="utf-8")
     print(f"\n{config}\n\n{summary}\n\n[+] Результаты: {out_dir.resolve()}")
@@ -78,6 +79,8 @@ if __name__ == "__main__":
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES), help="Режимы для сравнения")
     parser.add_argument("--model-path", type=str, default="data/models/best_model.pth", help="Веса MixingAIModel")
     parser.add_argument("--budget", type=float, default=60.0, help="Время на CMA-ES на одну пару, секунд")
+    parser.add_argument("--patience", type=int, default=None,
+                        help="Остановить CMA-ES, если за столько рендеров улучшение меньше 0.01")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0], help="Seed CMA-ES (несколько — для разброса)")
     parser.add_argument("--case-seed", type=int, default=0, help="Seed выбора синтетических пар и цепочек")
     parser.add_argument("--seconds", type=float, default=30.0, help="Длина фрагмента исходника и референса")

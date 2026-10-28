@@ -8,7 +8,7 @@
 
 Сравниваются режимы:
   - optimizer: правила + CMA-ES без нейросети;
-  - model+optimizer: то же, но стартовая точка и вероятности берутся у MixingAIModel;
+  - model+optimizer: то же, но стартовая точка, шаг поиска и вероятности берутся у MixingAIModel;
   - model: цепочка модели без подбора (как scripts/process_vocal.py --no-optimize).
 """
 import json
@@ -31,6 +31,8 @@ from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, select_excerpt, to_stereo
 
 MODES = ("optimizer", "model+optimizer", "model")
+# Допуск по целевой функции при сравнении скорости режимов (меньше шума одного рендера)
+LEVEL_TOLERANCE = 0.02
 
 
 @dataclass
@@ -115,6 +117,11 @@ def manifest_cases(manifest: str | Path, sr: int = 44100, seconds: float | None 
     return cases
 
 
+def renders_to_level(history: list[tuple[int, float]], level: float) -> int | None:
+    """Сколько рендеров понадобилось, чтобы лучшая целевая функция опустилась до level (None — не дошла)."""
+    return next((n for n, value in history if value <= level), None)
+
+
 def renders_to_fraction(history: list[tuple[int, float]], fraction: float = 0.9) -> int | None:
     """Сколько рендеров понадобилось CMA-ES, чтобы пройти fraction всего улучшения целевой функции."""
     if not history:
@@ -133,7 +140,7 @@ class ChainBenchmark:
                  log: Callable[[str], None] = print):
         """
         Args:
-            prior: Функция (y_src, y_ref) -> (model_probs, model_params) по сырым сигналам,
+            prior: Функция (y_src, y_ref) -> (model_probs, model_params, model_param_std) по сырым сигналам,
                 например MixingAIMLPipeline.predict_prior. Без нее режимы с моделью пропускаются.
             with_pitch: Учитывать ли отклонение от нот (pyin медленный).
         """
@@ -157,12 +164,13 @@ class ChainBenchmark:
 
     def run_case(self, case: BenchmarkCase, modes: tuple[str, ...] = MODES, budget_s: float = 60.0,
                  seed: int = 0, excerpt_s: float = 12.0, audio_dir: Path | None = None,
-                 with_baselines: bool = True) -> list[dict]:
+                 with_baselines: bool = True, patience_renders: int | None = None) -> list[dict]:
         """
         Возвращает по строке результатов на каждый режим.
 
         Args:
             with_baselines: Добавить строки source и oracle (от seed не зависят, достаточно одного раза на пару).
+            patience_renders: Ранняя остановка CMA-ES (см. ChainOptimizer.optimize).
         """
         ref_features = extract_style_features(case.ref, self.sr, with_pitch=self.with_pitch)
         gate = self.processor.estimate_noise_gate_threshold(librosa.to_mono(case.src))
@@ -177,6 +185,7 @@ class ChainBenchmark:
                 "plugins": [p.name for p in chain.plugins] if chain else [],
                 "renders": history[-1][0] if history else None,
                 "renders_to_90": renders_to_fraction(history) if history else None,
+                "history": history or [],
             })
             self.log(f"    {mode:16s} расстояние {distance:5.2f}"
                      + (f" | {seconds:4.0f} с" if seconds else "")
@@ -191,9 +200,9 @@ class ChainBenchmark:
         if with_baselines and case.oracle_chain is not None:
             add("oracle", self.render(case, case.oracle_chain, None), case.oracle_chain)
 
-        model_probs = model_params = None
+        model_probs = model_params = model_param_std = None
         if self.prior is not None and any(m.startswith("model") for m in modes):
-            model_probs, model_params = self.prior(case.src, case.ref)
+            model_probs, model_params, model_param_std = self.prior(case.src, case.ref)
 
         optimizer = ChainOptimizer(sr=self.sr, log=lambda _: None)
         for mode in modes:
@@ -211,8 +220,10 @@ class ChainBenchmark:
                 continue
             result = optimizer.optimize(
                 case.src, case.ref, model_probs=model_probs if use_model else None,
-                model_params=model_params if use_model else None, key_index=case.key_index, scale=case.scale,
+                model_params=model_params if use_model else None,
+                model_param_std=model_param_std if use_model else None, key_index=case.key_index, scale=case.scale,
                 gate_threshold_db=gate, budget_s=budget_s, excerpt_s=excerpt_s, seed=seed,
+                patience_renders=patience_renders,
             )
             add(mode, self.render(case, result.chain, gate), result.chain, time.perf_counter() - started,
                 result.history)
@@ -234,12 +245,15 @@ def summarize(rows: list[dict]) -> str:
         to_90 = [r["renders_to_90"] for r in items if r["renders_to_90"] is not None]
         seconds = [r["seconds"] for r in items if r["seconds"]]
         lines.append(f"| {mode} | {len(items)} | {distances.mean():.2f} | {np.median(distances):.2f} | "
-                     f"{np.mean(ratios):.0%} | " + (f"{np.mean(to_90):.0f}" if to_90 else "—") + " | "
+                     + (f"{np.mean(ratios):.0%}" if ratios else "—") + " | "
+                     + (f"{np.mean(to_90):.0f}" if to_90 else "—") + " | "
                      + (f"{np.mean(seconds):.0f}" if seconds else "—") + " |")
 
-    pairs = {}
+    pairs, histories = {}, {}
     for row in rows:
         pairs.setdefault((row["case"], row["seed"]), {})[row["mode"]] = row["distance"]
+        if row.get("history"):
+            histories.setdefault((row["case"], row["seed"]), {})[row["mode"]] = row["history"]
     head_to_head = [(p["model+optimizer"], p["optimizer"]) for p in pairs.values()
                     if "model+optimizer" in p and "optimizer" in p]
     if head_to_head:
@@ -247,6 +261,21 @@ def summarize(rows: list[dict]) -> str:
         losses = sum(with_model > without + 0.05 for with_model, without in head_to_head)
         lines.append(f"\nmodel+optimizer против optimizer: лучше {wins}, хуже {losses}, "
                      f"вничью (±0.05) {len(head_to_head) - wins - losses} из {len(head_to_head)}")
+
+    # Ускорение: за сколько рендеров каждый режим доходит до итогового уровня optimizer на той же паре
+    # (целевая функция одна и та же, поэтому уровни сравнимы, в отличие от «90% собственного улучшения»)
+    speed = [(renders_to_level(h["optimizer"], h["optimizer"][-1][1] + LEVEL_TOLERANCE),
+              renders_to_level(h["model+optimizer"], h["optimizer"][-1][1] + LEVEL_TOLERANCE))
+             for h in histories.values() if "optimizer" in h and "model+optimizer" in h]
+    if speed:
+        reached = [(base, fast) for base, fast in speed if fast is not None]
+        line = (f"\nДо итогового уровня optimizer (±{LEVEL_TOLERANCE}): "
+                f"optimizer за {np.median([b for b, _ in speed]):.0f} рендеров (медиана), model+optimizer дошел в {len(reached)} из {len(speed)}")
+        if reached:
+            ratios = [base / max(fast, 1) for base, fast in reached]
+            line += (f" за {np.median([f for _, f in reached]):.0f} рендеров, "
+                     f"ускорение {np.median(ratios):.1f}x (медиана по парам)")
+        lines.append(line)
 
     seeds = {r["seed"] for r in rows}
     if len(seeds) > 1:
