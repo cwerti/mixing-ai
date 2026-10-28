@@ -8,7 +8,7 @@ from pedalboard import Compressor, Pedalboard, Reverb
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.audio.vocal_enhancer import VocalEnhancer
-from app.eval.style_metrics import extract_style_features, style_distance
+from app.eval.style_metrics import WIDTH_FLOOR_DB, extract_style_features, style_distance, width_and_tails
 from synthetic_audio import synthetic_vocal as _synthetic_vocal
 
 SR = 22050
@@ -66,3 +66,18 @@ def test_style_distance_zero_for_identical_and_signed():
     assert total_same == pytest.approx(0.0)
     assert total_diff > 0.5
     assert per_feature["decay_fast_db"] > 0
+
+
+def test_width_split_between_notes_and_tails():
+    """Расширитель дает ширину на нотах и не окрашивает моно-сумму; стерео-реверб расширяет в основном паузы."""
+    dry = synthetic_vocal()
+    mono = width_and_tails(dry, SR)
+    assert mono["width_notes_db"] == mono["width_tails_db"] == WIDTH_FLOOR_DB
+
+    wide = VocalEnhancer(sr=SR).apply_stereo_enhancer(dry, delay_ms=15.0, width=0.5)
+    np.testing.assert_allclose(wide.mean(axis=0), dry, atol=1e-6)
+    assert width_and_tails(wide, SR)["width_notes_db"] > -15.0
+
+    reverb = Pedalboard([Reverb(room_size=0.8, wet_level=0.3, dry_level=0.8, width=1.0)])
+    wet = width_and_tails(reverb(np.vstack([dry, dry]).astype(np.float32), SR), SR)
+    assert wet["width_tails_db"] > wet["width_notes_db"] + 3.0

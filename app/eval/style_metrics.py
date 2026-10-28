@@ -7,6 +7,7 @@
 """
 import numpy as np
 import librosa
+from scipy import signal
 
 from app.audio.audio_processor import AudioProcessor
 
@@ -25,6 +26,9 @@ FEATURE_SCALES = {
     "delay_peak": 0.1,
     "width_global": 0.05,
     "width_high": 0.05,
+    "width_notes_db": 1.5,
+    "width_tails_db": 3.0,
+    "tail_brightness_db": 3.0,
     "sib_p90_db": 3.0,
     "air_ratio_db": 3.0,
     "pitch_cents": 5.0,
@@ -40,6 +44,9 @@ DEFAULT_WEIGHTS = {
     "delay_peak": 0.5,
     "width_global": 1.0,
     "width_high": 0.5,
+    "width_notes_db": 1.0,
+    "width_tails_db": 0.5,
+    "tail_brightness_db": 0.5,
     "sib_p90_db": 1.0,
     "air_ratio_db": 1.0,
     "pitch_cents": 1.0,
@@ -98,6 +105,51 @@ def fastest_decay_db(y: np.ndarray, sr: int) -> float:
     return float(np.percentile(change[from_phrase], 2)) if from_phrase.sum() >= 16 else 0.0
 
 
+# Нижняя граница Side/Mid: у моно-сигнала Side = 0, и без нее разница с любым стерео-референсом бесконечна
+WIDTH_FLOOR_DB = -30.0
+
+
+def width_and_tails(y: np.ndarray, sr: int) -> dict:
+    """
+    Пространство раздельно на нотах и в паузах. Средняя ширина по треку их смешивает: широкий хвост реверба
+    в паузах маскирует узкий голос на нотах, хотя на слух это разное пространство (голос «в центре
+    с хвостом» против широкого голоса).
+
+    Returns:
+        dict: width_notes_db / width_tails_db — Side/Mid (выше 150 Гц) на громких кадрах (выше P60)
+            и в паузах (P10..P35, не тише P95 - 60 дБ); tail_brightness_db — доля 1-8 кГц в паузах.
+    """
+    channels = _to_channels(y)
+    if channels.shape[0] == 1:
+        channels = np.vstack([channels, channels])
+    sos = signal.butter(4, 150.0, btype="highpass", fs=sr, output="sos")
+    mid = signal.sosfilt(sos, 0.5 * (channels[0] + channels[1]))
+    side = signal.sosfilt(sos, 0.5 * (channels[0] - channels[1]))
+
+    hop = 1024
+    rms_mid = librosa.feature.rms(y=mid, frame_length=2048, hop_length=hop)[0]
+    rms_side = librosa.feature.rms(y=side, frame_length=2048, hop_length=hop)[0]
+    level = 20.0 * np.log10(rms_mid + 1e-12)
+    audible = level > np.percentile(level, 95) - 60.0
+    notes = level > np.percentile(level[audible], 60)
+    tails = audible & (level >= np.percentile(level[audible], 10)) & (level <= np.percentile(level[audible], 35))
+
+    def width_db(frames: np.ndarray) -> float:
+        if not frames.any():
+            return WIDTH_FLOOR_DB
+        ratio = np.sqrt(np.mean(rms_side[frames] ** 2) / (np.mean(rms_mid[frames] ** 2) + 1e-20))
+        return float(max(WIDTH_FLOOR_DB, 20.0 * np.log10(ratio + 1e-12)))
+
+    power = np.abs(librosa.stft(mid, n_fft=2048, hop_length=hop)) ** 2 + np.abs(
+        librosa.stft(side, n_fft=2048, hop_length=hop)) ** 2
+    n = min(power.shape[1], len(tails))
+    tail_power = power[:, :n][:, tails[:n]].sum(axis=1) if tails[:n].any() else power.sum(axis=1)
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    bright = tail_power[(freqs >= 1000.0) & (freqs < 8000.0)].sum() / (tail_power.sum() + 1e-12)
+    return {"width_notes_db": width_db(notes), "width_tails_db": width_db(tails),
+            "tail_brightness_db": float(10.0 * np.log10(bright + 1e-12))}
+
+
 def pitch_grid_deviation_cents(y: np.ndarray, sr: int, max_seconds: float = 60.0) -> float:
     """
     Медианное отклонение F0 от полутоновой сетки в центах с поправкой на общую расстройку трека.
@@ -139,6 +191,7 @@ def extract_style_features(y: np.ndarray, sr: int, with_pitch: bool = True) -> d
     features = {key: float(raw[key]) for key in _RAW_KEYS}
     features["ltas_db"] = ltas_bands_db(y, sr)
     features["decay_fast_db"] = fastest_decay_db(y, sr)
+    features.update(width_and_tails(y, sr))
     if with_pitch:
         features["pitch_cents"] = pitch_grid_deviation_cents(y, sr)
     return features

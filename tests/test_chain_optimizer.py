@@ -9,7 +9,7 @@ from app.audio.dsp_engine import DSPEngine
 from app.dataset.dataset_schema import ChainConfig, PluginConfig
 from app.mixing.chain_optimizer import (
     CHAIN_INPUT_LUFS, DEFAULT_SIGMA, ChainOptimizer, _initial_params, _stagnated, normalize_lufs,
-    physical_to_normalized, search_stds, select_excerpt, to_stereo,
+    physical_to_normalized, search_stds, select_excerpt, select_plugins, to_stereo,
 )
 from synthetic_audio import synthetic_vocal
 
@@ -104,3 +104,12 @@ def test_optimizer_drops_misleading_prior_and_stops_early():
     assert any("отброшен" in line for line in result.report)
     assert any("остановлен" in line for line in result.report) or result.history[-1][0] < 400
     assert result.distance_final < result.distance_source / 2
+
+
+def test_enhancer_added_with_reverb_when_notes_are_narrow():
+    """Реверб не дает ширины на нотах, поэтому при узком голосе расширитель ставится вместе с ним."""
+    base = {"decay_fast_db": -20.0, "delay_peak": 0.1, "width_global": 0.0, "dr_p95_p10_db": 20.0,
+            "crest_db": 15.0, "sib_p90_db": -8.0, "width_notes_db": -30.0}
+    ref = dict(base, decay_fast_db=-12.0, width_global=0.3, width_notes_db=-15.0)
+    assert {"reverb", "stereo_enhancer"} <= set(select_plugins(base, ref, None)[0])
+    assert "stereo_enhancer" not in select_plugins(base, dict(ref, width_notes_db=-28.0), None)[0]

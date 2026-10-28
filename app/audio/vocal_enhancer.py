@@ -151,10 +151,10 @@ class VocalEnhancer:
 
     def apply_stereo_enhancer(self, y: np.ndarray, delay_ms: float = 18.0, width: float = 1.0) -> np.ndarray:
         """
-        Преобразует моно-сигнал в стерео с использованием задержки Хааса.
-        Задерживает правый канал относительно левого, создавая ощущение пространства.
-        Сохраняет моносовместимость низких частот.
-        
+        Расширяет стереобазу задержанной копией голоса, подмешанной только в Side (Mid/Side-вариант эффекта
+        Хааса): L = M + S + g*d, R = M + S - g*d, где d — задержанный Mid выше 150 Гц, g = width / 2.
+        Mid (моно-сумма) не меняется, поэтому тембр не окрашивается гребенчатым фильтром, а низ остается в моно.
+
         Args:
             y: Входной сигнал (1D моно-массив или 2D стерео-массив).
             delay_ms: Задержка в миллисекундах (обычно 12..25 мс для эффекта Хааса).
@@ -181,22 +181,15 @@ class VocalEnhancer:
         if delay_samples <= 0 or y_stereo.shape[1] <= delay_samples:
             return y_stereo
             
-        # Левый канал оставляем сухим, правый задерживаем
-        left = y_stereo[0]
-        right_delayed = np.zeros_like(y_stereo[1])
-        right_delayed[delay_samples:] = y_stereo[1][:-delay_samples]
-        
-        # Разделяем задержанный сигнал на СЧ/ВЧ и НЧ (чтобы низ остался в моно и не потерял фазу)
+        # Раньше задержанная копия подмешивалась к сухому правому каналу: в моно-сумме это гребенчатый
+        # фильтр (провалы через 1/delay Гц), который портил тембр сильнее, чем добавлял ширины
+        mid = 0.5 * (y_stereo[0] + y_stereo[1])
+        delayed = np.zeros_like(mid)
+        delayed[delay_samples:] = mid[:-delay_samples]
         sos_hp = signal.butter(4, 150.0, btype='highpass', fs=self.sr, output='sos')
-        right_high = signal.sosfilt(sos_hp, right_delayed)
-        right_low = right_delayed - right_high # НЧ-составляющая
-        
-        # Смешиваем задержанный СЧ/ВЧ сигнал с исходным
-        # Левый: исходный (моно)
-        # Правый: НЧ от исходного (без задержки) + СЧ/ВЧ от задержанного
-        y_stereo[1] = (right_low + (1 - width * 0.5) * left + (width * 0.5) * right_high)
-        
-        return y_stereo
+        spread = 0.5 * width * signal.sosfilt(sos_hp, delayed)
+
+        return np.vstack([y_stereo[0] + spread, y_stereo[1] - spread]).astype(y_stereo.dtype)
 
     @staticmethod
     def measure_stereo_width(y: np.ndarray) -> float:

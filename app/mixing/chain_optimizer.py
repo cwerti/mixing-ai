@@ -124,9 +124,15 @@ def select_plugins(src: dict, ref: dict, model_probs: dict[str, float] | None) -
         reasons.append(f"delay: повторы в огибающей {src['delay_peak']:.2f} -> {ref['delay_peak']:.2f}")
 
     width_gain = ref["width_global"] - src["width_global"]
+    notes_width_gain = ref["width_notes_db"] - src["width_notes_db"]
     if width_gain > 0.05 and "reverb" not in chosen:
         chosen.add("stereo_enhancer")
         reasons.append(f"stereo_enhancer: ширина {src['width_global']:.2f} -> {ref['width_global']:.2f} без хвостов")
+    elif notes_width_gain > 3.0:
+        # Реверб расширяет в основном паузы (хвост), а широкий голос на нотах дает только расширитель
+        chosen.add("stereo_enhancer")
+        reasons.append(f"stereo_enhancer: ширина на нотах {src['width_notes_db']:.1f} -> "
+                       f"{ref['width_notes_db']:.1f} дБ Side/Mid")
 
     dynamics_cut = src["dr_p95_p10_db"] - ref["dr_p95_p10_db"]
     crest_cut = src["crest_db"] - ref["crest_db"]
