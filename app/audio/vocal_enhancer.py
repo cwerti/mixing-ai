@@ -459,46 +459,39 @@ class VocalEnhancer:
             & (f0 < fmax * 0.97)
         )
         
-        # 2. Строим целевой контур частоты
-        target_pitch = np.copy(f0)
-        
+        # 2. Целевой контур. Нота выбирается по сглаженной высоте с гистерезисом (вибрато и ошибки yin
+        # не перебрасывают цель между соседними нотами), а поправка к ноте плавно меняется во времени:
+        # мгновенные скачки цели PSOLA пересинтезирует с «песком» на верхах
+        hop_s = hop_length / self.sr
+        midi = np.full(len(f0), np.nan)
+        midi[voiced_flag] = 12.0 * np.log2(f0[voiced_flag] / 440.0) + 69.0
+        midi_smooth = np.copy(midi)
+        midi_smooth[voiced_flag] = ndimage.median_filter(np.nan_to_num(midi, nan=0.0), size=7)[voiced_flag]
+
+        def nearest_note(m: float) -> float:
+            base = int(np.floor(m)) - 6
+            candidates = [n for n in range(base, base + 14) if n % 12 in allowed_classes]
+            return float(min(candidates, key=lambda n: abs(n - m)))
+
+        correction = np.zeros(len(f0))
+        note = None
         for t in range(len(f0)):
             if not voiced_flag[t]:
-                target_pitch[t] = np.nan
+                note = None
                 continue
-                
-            f_curr = f0[t]
-            midi = 12.0 * np.log2(f_curr / 440.0) + 69.0
-            midi_round = int(round(midi))
-            
-            octave = midi_round // 12
-            note_class = midi_round % 12
-            
-            best_diff = 12.0
-            target_class = allowed_classes[0]
-            for c in allowed_classes:
-                diff = min(abs(note_class - c), 12 - abs(note_class - c))
-                if diff < best_diff:
-                    best_diff = diff
-                    target_class = c
-                    
-            target_midi = octave * 12 + target_class
-            
-            if abs(target_midi - midi) > 6.0:
-                if target_midi < midi:
-                    target_midi += 12
-                else:
-                    target_midi -= 12
-                    
-            effective_speed = np.power(speed, 0.3) if speed > 0.1 else speed
-            target_midi_clamped = midi + effective_speed * (target_midi - midi)
-            
-            target_pitch[t] = 440.0 * (2.0 ** ((target_midi_clamped - 69.0) / 12.0))
-            
-        n_voiced = np.sum(voiced_flag)
-        total_f = len(f0)
-        pct = (n_voiced / total_f * 100.0) if total_f > 0 else 0.0
-        
+            nearest = nearest_note(midi_smooth[t])
+            # Гистерезис: соседняя нота принимается, только если голос ушел от текущей больше чем на 0.65 полутона
+            if note is None or abs(midi_smooth[t] - note) > 0.65:
+                note = nearest
+            correction[t] = note - midi_smooth[t]
+
+        # speed: 1.0 — подтяжка за ~10 мс (робо-эффект), 0.0 — за ~200 мс; сила подтяжки как раньше
+        retune_s = 0.01 + 0.19 * (1.0 - speed)
+        amount = np.power(speed, 0.3) if speed > 0.1 else speed
+        correction = amount * ndimage.uniform_filter1d(correction, size=max(1, int(round(retune_s / hop_s))))
+        target_pitch = np.full(len(f0), np.nan)
+        target_pitch[voiced_flag] = 440.0 * 2.0 ** ((midi[voiced_flag] + correction[voiced_flag] - 69.0) / 12.0)
+
         # 3. Синтезируем с помощью PSOLA
         if is_stereo:
             y_tuned_l = psola.vocode(y[0], self.sr, target_pitch=target_pitch, fmin=int(fmin), fmax=int(fmax))
@@ -510,7 +503,15 @@ class VocalEnhancer:
         # PSOLA оставляет инфразвук и гул ниже основного тона (+14 дБ ниже 20 Гц на реальном вокале),
         # а EQ стоит в цепочке раньше автотюна и уже не может его срезать
         sos = signal.butter(4, fmin * 0.9, btype='highpass', fs=self.sr, output='sos')
-        return signal.sosfilt(sos, y_tuned, axis=-1)
+        y_tuned = signal.sosfilt(sos, y_tuned, axis=-1)
+
+        # 4. Пересинтез PSOLA сам по себе меняет верха гласных на 1-4 дБ даже без сдвига высоты, поэтому
+        # оригинал заменяется тюном только там, где поправка заметна (> 8 центов), с плавными переходами
+        need = (np.abs(correction) > 0.08).astype(float)
+        need = ndimage.uniform_filter1d(ndimage.maximum_filter1d(need, size=5), size=5)
+        mask = np.interp(np.arange(y_tuned.shape[-1]), np.arange(len(need)) * hop_length, need)
+        original = signal.sosfilt(sos, y, axis=-1)[..., :y_tuned.shape[-1]]
+        return mask * y_tuned + (1.0 - mask) * original
 
 
 
