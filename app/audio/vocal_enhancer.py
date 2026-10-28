@@ -399,6 +399,31 @@ class VocalEnhancer:
         
         return y_out
 
+    def _psola_shift(self, y: np.ndarray, frame_times: np.ndarray, correction: np.ndarray,
+                     fmin: float, fmax: float) -> np.ndarray:
+        """
+        Сдвигает высоту на correction полутонов (кадры frame_times) через PSOLA Praat.
+
+        Цель строится от собственного контура высоты Praat, по которому он режет сигнал на периоды: при
+        нулевой поправке сигнал не меняется. Библиотека psola строила цель от внешней оценки F0 (расхождение
+        в несколько центов давало дрожание высоты) и писала 0 Гц в кадры без голоса — Praat интерполировал
+        цель к нулю, и на краях нот и придыхании высота проваливалась («песок»).
+        """
+        import parselmouth
+        from parselmouth.praat import call
+
+        sound = parselmouth.Sound(np.asarray(y, dtype=np.float64), sampling_frequency=self.sr)
+        manipulation = call(sound, "To Manipulation", 0.01, float(fmin), float(fmax))
+        source = call(manipulation, "Extract pitch tier")
+        target = call("Create PitchTier", "target", sound.xmin, sound.xmax)
+        for i in range(1, int(call(source, "Get number of points")) + 1):
+            t = call(source, "Get time from index", i)
+            shift = float(np.interp(t, frame_times, correction))
+            call(target, "Add point", t, call(source, "Get value at index", i) * 2.0 ** (shift / 12.0))
+        call([target, manipulation], "Replace pitch tier")
+        out = call(manipulation, "Get resynthesis (overlap-add)").values[0]
+        return np.pad(out, (0, max(0, len(y) - len(out))))[:len(y)].astype(np.float32)
+
     def apply_autotune(self, y: np.ndarray, key_index: int = 0, scale: str = 'minor', speed: float = 0.85) -> np.ndarray:
         """
         Математический автотюн (Pitch Correction) вокального трека с использованием
@@ -415,8 +440,6 @@ class VocalEnhancer:
         Returns:
             np.ndarray: Скорректированный аудиосигнал.
         """
-        import psola
-        
         is_stereo = (y.ndim == 2 and y.shape[0] == 2)
         y_mono = np.mean(y, axis=0) if is_stereo else y
         
@@ -489,29 +512,21 @@ class VocalEnhancer:
         retune_s = 0.01 + 0.19 * (1.0 - speed)
         amount = np.power(speed, 0.3) if speed > 0.1 else speed
         correction = amount * ndimage.uniform_filter1d(correction, size=max(1, int(round(retune_s / hop_s))))
-        target_pitch = np.full(len(f0), np.nan)
-        target_pitch[voiced_flag] = 440.0 * 2.0 ** ((midi[voiced_flag] + correction[voiced_flag] - 69.0) / 12.0)
-
-        # 3. Синтезируем с помощью PSOLA
+        # 3. Синтезируем с помощью PSOLA (Praat): поправка в полутонах по кадрам yin
+        frame_times = np.arange(len(correction)) * hop_s
         if is_stereo:
-            y_tuned_l = psola.vocode(y[0], self.sr, target_pitch=target_pitch, fmin=int(fmin), fmax=int(fmax))
-            y_tuned_r = psola.vocode(y[1], self.sr, target_pitch=target_pitch, fmin=int(fmin), fmax=int(fmax))
-            y_tuned = np.vstack([y_tuned_l, y_tuned_r])
+            y_tuned = np.vstack([self._psola_shift(ch, frame_times, correction, fmin, fmax) for ch in y])
         else:
-            y_tuned = psola.vocode(y_mono, self.sr, target_pitch=target_pitch, fmin=int(fmin), fmax=int(fmax))
+            y_tuned = self._psola_shift(y_mono, frame_times, correction, fmin, fmax)
 
         # PSOLA оставляет инфразвук и гул ниже основного тона (+14 дБ ниже 20 Гц на реальном вокале),
         # а EQ стоит в цепочке раньше автотюна и уже не может его срезать
         sos = signal.butter(4, fmin * 0.9, btype='highpass', fs=self.sr, output='sos')
         y_tuned = signal.sosfilt(sos, y_tuned, axis=-1)
 
-        # 4. Пересинтез PSOLA сам по себе меняет верха гласных на 1-4 дБ даже без сдвига высоты, поэтому
-        # оригинал заменяется тюном только там, где поправка заметна (> 8 центов), с плавными переходами
-        need = (np.abs(correction) > 0.08).astype(float)
-        need = ndimage.uniform_filter1d(ndimage.maximum_filter1d(need, size=5), size=5)
-        mask = np.interp(np.arange(y_tuned.shape[-1]), np.arange(len(need)) * hop_length, need)
-        original = signal.sosfilt(sos, y, axis=-1)[..., :y_tuned.shape[-1]]
-        return mask * y_tuned + (1.0 - mask) * original
+        # Тюн не смешивается с оригиналом: PSOLA пересобирает волну с другой фазой (корреляция с оригиналом
+        # около нуля даже без сдвига), и плавный переход между ними давал фазовые призвуки на краях нот
+        return y_tuned
 
 
 
