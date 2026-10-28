@@ -155,7 +155,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Скрипт инференса Mixing-AI Pipeline v2")
     parser.add_argument("--source", type=str, default="data/raw/source/source.wav", help="Путь к сухому вокалу")
     parser.add_argument("--ref", type=str, default="data/raw/reference/reference.wav", help="Путь к референсному вокалу")
-    parser.add_argument("--model-path", type=str, default="data/models/best_model.pth", help="Путь к весам модели")
+    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Путь к весам модели")
     parser.add_argument("--output-name", type=str, default="mixing_ai_predicted.fst", help="Имя выходного пресета .fst")
 
     args = parser.parse_args()

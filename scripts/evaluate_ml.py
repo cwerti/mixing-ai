@@ -126,7 +126,7 @@ def evaluate(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Скрипт проверки метрик модели Mixing-AI v2")
     parser.add_argument("--dataset-dir", type=str, default="data/processed/dataset_v1", help="Путь к датасету")
-    parser.add_argument("--model-path", type=str, default="data/models/best_model.pth", help="Путь к чекпоинту модели")
+    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Путь к чекпоинту модели")
     parser.add_argument("--max-len", type=int, default=520, help="Длина спектрограммы")
 
     args = parser.parse_args()

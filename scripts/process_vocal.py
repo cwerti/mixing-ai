@@ -174,7 +174,7 @@ def process_vocal(args):
             y_src_chain, y_ref_full,
             model_probs=model_probs, model_params=model_params, model_param_std=load_param_std(model_file),
             key_index=ref_key, scale=ref_scale,
-            gate_threshold_db=gate_thresh, budget_s=args.budget,
+            gate_threshold_db=gate_thresh, budget_s=args.budget, patience_renders=args.patience or None,
         )
         chain_config, eq_bands = result.chain, result.eq_bands
     print_chain(chain_config)
@@ -248,13 +248,15 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=str, required=True, help="Путь к вашему сухому вокалу (WAV)")
     parser.add_argument("--ref", type=str, required=True, help="Путь к референсному треку (WAV или MP3)")
     parser.add_argument("--extract-vocals", action="store_true", help="Принудительно изолировать вокал из референса через Demucs")
-    parser.add_argument("--model-path", type=str, default="data/models/best_model.pth", help="Путь к весам обученной нейросети")
+    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Путь к весам обученной нейросети")
     parser.add_argument("--output-fst", type=str, default="data/processed/vocal_mastering.fst", help="Путь сохранения пресета FL Studio")
     parser.add_argument("--output-wav", type=str, default="data/processed/mixed_vocal_preview.wav", help="Путь сохранения WAV превью")
     parser.add_argument("--no-audio-render", action="store_true", help="Отключить генерацию WAV превью (быстрее, только .fst)")
     parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы (как при обучении)")
     parser.add_argument("--no-optimize", action="store_true", help="Использовать цепочку модели без подбора по референсу")
     parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
+    parser.add_argument("--patience", type=int, default=60,
+                        help="Остановить подбор, если за столько рендеров улучшение меньше 0.01 (0 — до конца бюджета)")
 
     args = parser.parse_args()
     process_vocal(args)
