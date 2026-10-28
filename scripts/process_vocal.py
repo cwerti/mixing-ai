@@ -30,7 +30,7 @@ from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, to_stereo
 from app.ml.model import MixingAIModel
 from app.ml.features import model_inputs
-from app.ml.pipeline import model_chain, model_params_by_plugin
+from app.ml.pipeline import load_param_std, model_chain, model_params_by_plugin
 from app.presets.full_preset_generator import FullPresetGenerator
 
 def extract_vocal_stem(reference_mix_path: Path, output_dir: Path) -> Path:
@@ -172,7 +172,7 @@ def process_vocal(args):
         print(f"\n[*] Подбор цепочки по референсу (бюджет {args.budget:.0f} с)...")
         result = ChainOptimizer(sr=sr).optimize(
             y_src_chain, y_ref_full,
-            model_probs=model_probs, model_params=model_params,
+            model_probs=model_probs, model_params=model_params, model_param_std=load_param_std(model_file),
             key_index=ref_key, scale=ref_scale,
             gate_threshold_db=gate_thresh, budget_s=args.budget,
         )

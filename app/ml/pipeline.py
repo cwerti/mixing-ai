@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 import librosa
@@ -38,6 +39,19 @@ def model_chain(plugins: list[str], eq_bands: list[tuple[float, float]],
     return chain
 
 
+def calibration_path(model_path: str | Path) -> Path:
+    """Файл калибровки рядом с весами: data/models/v3/best_model.pth -> best_model.calibration.json."""
+    return Path(model_path).with_suffix(".calibration.json")
+
+
+def load_param_std(model_path: str | Path) -> dict[str, dict[str, float]] | None:
+    """Ошибка параметров модели на валидации (scripts/calibrate_prior.py) или None, если калибровки нет."""
+    path = calibration_path(model_path)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))["param_std"]
+
+
 class MixingAIMLPipeline:
     """
     Инференс-пайплайн Mixing-AI v2 (Source + Reference Dual-Input).
@@ -63,6 +77,7 @@ class MixingAIMLPipeline:
         model_dict.update(filtered_dict)
         self.model.load_state_dict(model_dict)
         self.model.eval()
+        self.param_std = load_param_std(model_path)
         print(f"[+] Модель Mixing-AI v2 загружена на {self.device} (эпоха: {checkpoint.get('epoch', 'N/A')})")
 
     def predict(self, y_src: np.ndarray, y_ref: np.ndarray) -> tuple[list[str], np.ndarray, np.ndarray]:
@@ -88,12 +103,15 @@ class MixingAIMLPipeline:
 
         return active_plugins, probs, pred_params_vec
 
-    def predict_prior(self, y_src: np.ndarray,
-                      y_ref: np.ndarray) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
-        """Предсказание в формате ChainOptimizer: вероятности и нормализованные параметры по именам плагинов."""
+    def predict_prior(self, y_src: np.ndarray, y_ref: np.ndarray) -> tuple[
+            dict[str, float], dict[str, dict[str, float]], dict[str, dict[str, float]] | None]:
+        """
+        Предсказание в формате ChainOptimizer: вероятности и нормализованные параметры по именам плагинов,
+        плюс ошибка параметров на валидации (None без калибровки).
+        """
         _, probs, pred_params_vec = self.predict(y_src, y_ref)
         return ({name: float(probs[i]) for i, name in enumerate(CHAIN_ORDER)},
-                model_params_by_plugin(pred_params_vec))
+                model_params_by_plugin(pred_params_vec), self.param_std)
 
     def run(self, source_path: str | Path, ref_path: str | Path, output_preset_name: str = "mixing_ai_predicted.fst") -> Path | None:
         print(f"\n[*] Запуск инференса модели для:\n  Dry: {source_path}\n  Ref: {ref_path}")

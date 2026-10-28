@@ -8,7 +8,8 @@ sys.path.append(str(Path(__file__).parent.parent.absolute()))
 from app.audio.dsp_engine import DSPEngine
 from app.dataset.dataset_schema import ChainConfig, PluginConfig
 from app.mixing.chain_optimizer import (
-    CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, physical_to_normalized, select_excerpt, to_stereo,
+    CHAIN_INPUT_LUFS, DEFAULT_SIGMA, ChainOptimizer, _initial_params, _stagnated, normalize_lufs,
+    physical_to_normalized, search_stds, select_excerpt, to_stereo,
 )
 from synthetic_audio import synthetic_vocal
 
@@ -64,3 +65,42 @@ def test_select_excerpt_picks_loudest_part():
     excerpt = select_excerpt(y, SR, seconds=2.0)
     assert excerpt.shape == (2, SR * 2)
     assert excerpt.mean() > 0.4
+
+
+def test_prior_start_only_for_plugins_the_model_enables():
+    """Параметры модели берутся как старт только у плагинов, которые она считает активными."""
+    params = {"reverb": {"room_size": 0.9, "damping": 0.1, "wet_level": 0.7, "dry_level": 0.2}}
+    assert _initial_params("reverb", {"reverb": 0.9}, params)["wet_level"] == 0.7
+    assert _initial_params("reverb", {"reverb": 0.2}, params)["wet_level"] == 0.25
+
+
+def test_search_stds_narrow_around_confident_prior():
+    """Шаг поиска у параметров со стартом от модели — ее ошибка в пределах PRIOR_SIGMA_RANGE, у прочих — DEFAULT_SIGMA."""
+    layout = [("reverb", "wet_level"), ("reverb", "damping"), ("delay", "mix")]
+    std = {"reverb": {"wet_level": 0.01, "damping": 0.12}, "delay": {"mix": 0.1}}
+    assert search_stds(layout, {"reverb"}, std) == [0.05, 0.12, DEFAULT_SIGMA]
+    assert search_stds(layout, {"reverb"}, None) == [DEFAULT_SIGMA] * 3
+
+
+def test_stagnated_after_patience_without_progress():
+    """Остановка, только когда за patience рендеров улучшение меньше порога."""
+    history = [(1, 3.0), (11, 2.0), (21, 1.995), (31, 1.99)]
+    assert _stagnated(history, patience_renders=20, min_improvement=0.02)
+    assert not _stagnated(history, patience_renders=30, min_improvement=0.02)
+    assert not _stagnated(history[:2], patience_renders=20, min_improvement=0.02)
+
+
+def test_optimizer_drops_misleading_prior_and_stops_early():
+    """Заведомо неверный старт модели (сухой реверб) отбрасывается, а ранняя остановка экономит рендеры."""
+    dry = synthetic_vocal(SR, seconds=8.0, seed=3)
+    ref = _render_reference(dry)
+    probs = {"reverb": 0.9, "compressor": 0.9}
+    params = {"reverb": {"room_size": 0.0, "damping": 1.0, "wet_level": 0.0, "dry_level": 1.0},
+              "compressor": {"threshold_db": 1.0, "ratio": 0.0, "attack_ms": 0.5, "release_ms": 0.5}}
+
+    result = ChainOptimizer(sr=SR, log=lambda _: None).optimize(
+        dry, ref, model_probs=probs, model_params=params, budget_s=15.0, excerpt_s=8.0, patience_renders=40)
+
+    assert any("отброшен" in line for line in result.report)
+    assert any("остановлен" in line for line in result.report) or result.history[-1][0] < 400
+    assert result.distance_final < result.distance_source / 2

@@ -38,6 +38,10 @@ PARAM_INTENSITY = {
     ("exciter", "mix"): 1,
 }
 
+# Шаг CMA-ES без подсказки сети и границы шага по уверенности сети (ошибка параметра на валидации)
+DEFAULT_SIGMA = 0.2
+PRIOR_SIGMA_RANGE = (0.05, DEFAULT_SIGMA)
+
 # Плагины, которые подбирает оптимизатор (EQ считается аналитически, автотюн — отдельно вне цикла)
 SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and name != "pitch_corrector"]
 
@@ -146,15 +150,54 @@ def select_plugins(src: dict, ref: dict, model_probs: dict[str, float] | None) -
     return [name for name in SEARCHABLE_PLUGINS if name in chosen], reasons
 
 
-def _initial_params(plugin: str, model_params: dict[str, dict[str, float]] | None) -> dict[str, float]:
-    """Стартовые нормализованные параметры: предсказание модели или мягкая середина диапазона."""
-    if model_params and plugin in model_params:
-        return {k: float(np.clip(v, 0.0, 1.0)) for k, v in model_params[plugin].items()}
+def _uses_prior(plugin: str, model_probs: dict[str, float] | None,
+                model_params: dict[str, dict[str, float]] | None) -> bool:
+    """
+    Можно ли стартовать с параметров модели. Регрессия учится только на активных плагинах, поэтому параметры
+    плагина, который сама модель считает выключенным, — шум, а не подсказка.
+    """
+    if not model_params or plugin not in model_params:
+        return False
+    return model_probs is None or model_probs.get(plugin, 0.0) > 0.5
+
+
+def _default_params(plugin: str) -> dict[str, float]:
+    """Мягкая середина диапазона: умеренная обработка без подсказки модели."""
     start = {}
     for param in PARAM_LAYOUT[plugin]:
         direction = PARAM_INTENSITY.get((plugin, param), 0)
         start[param] = 0.25 if direction > 0 else 0.75 if direction < 0 else 0.5
     return start
+
+
+def _initial_params(plugin: str, model_probs: dict[str, float] | None,
+                    model_params: dict[str, dict[str, float]] | None) -> dict[str, float]:
+    """Стартовые нормализованные параметры: предсказание модели или мягкая середина диапазона."""
+    if _uses_prior(plugin, model_probs, model_params):
+        return {k: float(np.clip(v, 0.0, 1.0)) for k, v in model_params[plugin].items()}
+    return _default_params(plugin)
+
+
+def search_stds(layout: list[tuple[str, str]], prior_plugins: set[str],
+                model_param_std: dict[str, dict[str, float]] | None) -> list[float]:
+    """
+    Начальный шаг CMA-ES по каждой координате: у параметров со стартом от модели — ее типичная ошибка
+    на валидации (уверенная сеть сужает поиск), у остальных — DEFAULT_SIGMA.
+    """
+    stds = []
+    for plugin, param in layout:
+        std = (model_param_std or {}).get(plugin, {}).get(param) if plugin in prior_plugins else None
+        stds.append(DEFAULT_SIGMA if std is None else float(np.clip(std, *PRIOR_SIGMA_RANGE)))
+    return stds
+
+
+def _stagnated(history: list[tuple[int, float]], patience_renders: int, min_improvement: float) -> bool:
+    """True, если за patience_renders последних рендеров целевая функция улучшилась меньше min_improvement."""
+    renders, best = history[-1]
+    if renders < patience_renders:
+        return False
+    before = next(value for n, value in reversed(history) if n <= renders - patience_renders)
+    return before - best < min_improvement
 
 
 class ChainOptimizer:
@@ -201,9 +244,11 @@ class ChainOptimizer:
         return best_speed
 
     def optimize(self, y_src: np.ndarray, y_ref: np.ndarray, *, model_probs: dict[str, float] | None = None,
-                 model_params: dict[str, dict[str, float]] | None = None, key_index: int = 0,
+                 model_params: dict[str, dict[str, float]] | None = None,
+                 model_param_std: dict[str, dict[str, float]] | None = None, key_index: int = 0,
                  scale: str = "major", gate_threshold_db: float | None = None, budget_s: float = 60.0,
-                 excerpt_s: float = 12.0, seed: int = 0) -> OptimizationResult:
+                 excerpt_s: float = 12.0, seed: int = 0, patience_renders: int | None = None,
+                 min_improvement: float = 0.01) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -212,10 +257,13 @@ class ChainOptimizer:
             y_ref: Референсный вокал.
             model_probs: Вероятности плагинов от MixingAIModel (по имени).
             model_params: Нормализованные параметры плагинов от MixingAIModel (стартовая точка поиска).
+            model_param_std: Ошибка параметров модели на валидации (начальный шаг поиска вокруг ее старта).
             key_index, scale: Тональность референса для автотюна.
             gate_threshold_db: Порог Noise Gate для сигнала на уровне CHAIN_INPUT_LUFS.
             budget_s: Ограничение времени на CMA-ES.
             excerpt_s: Длина фрагмента исходника для рендеров в цикле.
+            patience_renders: Остановить CMA-ES, если за столько рендеров целевая функция улучшилась меньше,
+                чем на min_improvement (None — работать до бюджета или сходимости).
         """
         report = []
 
@@ -254,7 +302,8 @@ class ChainOptimizer:
                                             ref_features)
             note(f"[*] Цепочка модели {list(prior_plugins)}: расстояние {distance_prior:.2f}")
 
-        current = {p: _initial_params(p, model_params) for p in plugins}
+        prior_plugins = {p for p in plugins if _uses_prior(p, model_probs, model_params)}
+        current = {p: _initial_params(p, model_probs, model_params) for p in plugins}
         layout = [(p, k) for p in plugins for k in PARAM_LAYOUT[p]]
 
         def unpack(x) -> dict[str, dict[str, float]]:
@@ -269,18 +318,33 @@ class ChainOptimizer:
 
         best_score = objective(current)
         history = [(1, best_score)]
+        if prior_plugins:
+            # Страховка от промаха модели: если мягкий старт без нее лучше, поиск идет от него с широким шагом
+            fallback = {p: _default_params(p) for p in plugins}
+            fallback_score = objective(fallback)
+            history.append((2, min(best_score, fallback_score)))
+            if fallback_score < best_score:
+                note(f"[*] Старт модели хуже мягкого ({best_score:.2f} против {fallback_score:.2f}), он отброшен")
+                current, best_score, prior_plugins = fallback, fallback_score, set()
         if layout:
             x0 = [current[p][k] for p, k in layout]
-            options = {"bounds": [0.0, 1.0], "seed": seed + 1, "verbose": -9, "maxfevals": 2000}
-            es = cma.CMAEvolutionStrategy(x0, 0.2, options)
+            stds = search_stds(layout, prior_plugins, model_param_std)
+            options = {"bounds": [0.0, 1.0], "seed": seed + 1, "verbose": -9, "maxfevals": 2000,
+                       "CMA_stds": [std / DEFAULT_SIGMA for std in stds]}
+            if prior_plugins:
+                note(f"[*] Старт от модели для {sorted(prior_plugins)}, шаг поиска {np.mean(stds):.3f}")
+            es = cma.CMAEvolutionStrategy(x0, DEFAULT_SIGMA, options)
             started = time.perf_counter()
-            evaluations = 0
+            evaluations = history[-1][0]
             while not es.stop() and time.perf_counter() - started < budget_s:
                 candidates = es.ask()
                 scores = [objective(unpack(x)) for x in candidates]
                 es.tell(candidates, scores)
                 evaluations += len(candidates)
-                history.append((evaluations + 1, min(best_score, es.result.fbest)))
+                history.append((evaluations, min(history[-1][1], es.result.fbest)))
+                if patience_renders and _stagnated(history, patience_renders, min_improvement):
+                    note(f"[*] CMA-ES остановлен: за {patience_renders} рендеров улучшение меньше {min_improvement}")
+                    break
             if es.result.fbest < best_score:
                 best_score = es.result.fbest
                 current = unpack(es.result.xbest)
