@@ -175,6 +175,7 @@ def process_vocal(args):
             model_probs=model_probs, model_params=model_params, model_param_std=load_param_std(model_file),
             key_index=ref_key, scale=ref_scale,
             gate_threshold_db=gate_thresh, budget_s=args.budget, patience_renders=args.patience or None,
+            allow_tune=not args.no_tune,
         )
         chain_config, eq_bands = result.chain, result.eq_bands
     print_chain(chain_config)
@@ -255,6 +256,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы (как при обучении)")
     parser.add_argument("--no-optimize", action="store_true", help="Использовать цепочку модели без подбора по референсу")
     parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
+    parser.add_argument("--no-tune", action="store_true",
+                        help="Не добавлять автотюн (если в референсе его нет или слышны артефакты)")
     parser.add_argument("--patience", type=int, default=60,
                         help="Остановить подбор, если за столько рендеров улучшение меньше 0.01 (0 — до конца бюджета)")
 

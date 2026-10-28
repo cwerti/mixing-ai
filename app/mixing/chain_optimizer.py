@@ -248,7 +248,7 @@ class ChainOptimizer:
                  model_param_std: dict[str, dict[str, float]] | None = None, key_index: int = 0,
                  scale: str = "major", gate_threshold_db: float | None = None, budget_s: float = 60.0,
                  excerpt_s: float = 12.0, seed: int = 0, patience_renders: int | None = None,
-                 min_improvement: float = 0.01) -> OptimizationResult:
+                 min_improvement: float = 0.01, allow_tune: bool = True) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -264,6 +264,8 @@ class ChainOptimizer:
             excerpt_s: Длина фрагмента исходника для рендеров в цикле.
             patience_renders: Остановить CMA-ES, если за столько рендеров целевая функция улучшилась меньше,
                 чем на min_improvement (None — работать до бюджета или сходимости).
+            allow_tune: Разрешить автотюн. PSOLA пересинтезирует сигнал и на переходах нот может давать
+                ВЧ-артефакты, поэтому пользователь может его запретить.
         """
         report = []
 
@@ -284,8 +286,10 @@ class ChainOptimizer:
         for reason in reasons or ["ничего, кроме EQ, не требуется"]:
             note(f"    {reason}")
 
-        pitch_speed = self._choose_pitch_speed(excerpt, src_features["pitch_cents"], ref_features["pitch_cents"],
-                                               key_index, scale)
+        pitch_speed = None
+        if allow_tune:
+            pitch_speed = self._choose_pitch_speed(excerpt, src_features["pitch_cents"], ref_features["pitch_cents"],
+                                                   key_index, scale)
         if pitch_speed is not None:
             phys = DATAGEN_PLUGINS["pitch_corrector"]["params"]["speed"]
             excerpt = self.enhancer.apply_autotune(excerpt, key_index=key_index, scale=scale,
