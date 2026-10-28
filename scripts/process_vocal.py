@@ -175,7 +175,7 @@ def process_vocal(args):
             model_probs=model_probs, model_params=model_params, model_param_std=load_param_std(model_file),
             key_index=ref_key, scale=ref_scale,
             gate_threshold_db=gate_thresh, budget_s=args.budget, patience_renders=args.patience or None,
-            allow_tune=not args.no_tune,
+            allow_tune=not args.no_tune, tune_speed=args.tune_speed,
         )
         chain_config, eq_bands = result.chain, result.eq_bands
     print_chain(chain_config)
@@ -258,6 +258,8 @@ if __name__ == "__main__":
     parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
     parser.add_argument("--no-tune", action="store_true",
                         help="Не добавлять автотюн (если в референсе его нет или слышны артефакты)")
+    parser.add_argument("--tune-speed", type=float, default=None,
+                        help="Сила тюна 0..1 вручную (по умолчанию подбирается по отклонению от нот референса)")
     parser.add_argument("--patience", type=int, default=60,
                         help="Остановить подбор, если за столько рендеров улучшение меньше 0.01 (0 — до конца бюджета)")
 

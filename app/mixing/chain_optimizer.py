@@ -254,7 +254,8 @@ class ChainOptimizer:
                  model_param_std: dict[str, dict[str, float]] | None = None, key_index: int = 0,
                  scale: str = "major", gate_threshold_db: float | None = None, budget_s: float = 60.0,
                  excerpt_s: float = 12.0, seed: int = 0, patience_renders: int | None = None,
-                 min_improvement: float = 0.01, allow_tune: bool = True) -> OptimizationResult:
+                 min_improvement: float = 0.01, allow_tune: bool = True,
+                 tune_speed: float | None = None) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -272,6 +273,8 @@ class ChainOptimizer:
                 чем на min_improvement (None — работать до бюджета или сходимости).
             allow_tune: Разрешить автотюн. PSOLA пересинтезирует сигнал и на переходах нот может давать
                 ВЧ-артефакты, поэтому пользователь может его запретить.
+            tune_speed: Нормализованная сила тюна [0..1] вместо подбора по отклонению от нот референса
+                (на слух выбор может расходиться с метрикой).
         """
         report = []
 
@@ -293,7 +296,9 @@ class ChainOptimizer:
             note(f"    {reason}")
 
         pitch_speed = None
-        if allow_tune:
+        if allow_tune and tune_speed is not None:
+            pitch_speed = float(np.clip(tune_speed, 0.0, 1.0))
+        elif allow_tune:
             pitch_speed = self._choose_pitch_speed(excerpt, src_features["pitch_cents"], ref_features["pitch_cents"],
                                                    key_index, scale)
         if pitch_speed is not None:
