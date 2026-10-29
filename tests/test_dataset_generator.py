@@ -99,3 +99,41 @@ def test_dataset_generator(temp_dataset_env):
         stats = json.load(fs)
         assert stats["total_samples"] == 5
         assert stats["sr"] == 44100
+
+
+def test_is_dry_source_excludes_processed_vocals(tmp_path):
+    """Обработанные инженером файлы из пула Cambridge не считаются сухими, их сухие версии — считаются."""
+    from app.dataset.dataset_generator import PROCESSED_VOCAL_STEMS, is_dry_source
+
+    assert "Albert_Kader_Whiptails_12_Vox_Wet" in PROCESSED_VOCAL_STEMS
+    sr = 44100
+    tone = 0.2 * np.sin(2 * np.pi * 220 * np.arange(sr // 10) / sr)
+    dry_names = ["Albert_Kader_Whiptails_11_Vox_Dry", "oxeye_Sorry_13_LeadVox_NoPitchProcessing",
+                 "Ronnie_Jones_Why_Dont_You_Stay_24_LeadVoxRaw"]
+    for name in [*PROCESSED_VOCAL_STEMS, *dry_names]:
+        sf.write(tmp_path / f"{name}.wav", tone, sr)
+
+    for name in PROCESSED_VOCAL_STEMS:
+        assert not is_dry_source(tmp_path / f"{name}.wav")
+    for name in dry_names:
+        assert is_dry_source(tmp_path / f"{name}.wav")
+    assert not is_dry_source(tmp_path / "missing.wav")
+
+
+def test_generator_never_uses_processed_vocals(tmp_path):
+    """Генератор не берет обработанные файлы ни как исходник, ни как голос референса."""
+    sr = 44100
+    t = np.arange(int(0.5 * sr)) / sr
+    cambridge = tmp_path / "dry" / "cambridge"
+    cambridge.mkdir(parents=True)
+    sf.write(cambridge / "Albert_Kader_Whiptails_11_Vox_Dry.wav", 0.3 * np.sin(2 * np.pi * 220 * t), sr)
+    sf.write(cambridge / "Albert_Kader_Whiptails_12_Vox_Wet.wav", 0.3 * np.sin(2 * np.pi * 220 * t), sr)
+    sf.write(cambridge / "Other_Song_01_LeadVox.wav", 0.2 * np.sin(2 * np.pi * 330 * t), sr)
+
+    generator = DatasetGenerator(dry_dir=tmp_path / "dry", output_dir=tmp_path / "out", sr=sr)
+    generator.generate(max_samples=6)
+
+    lines = (tmp_path / "out" / "index.jsonl").read_text(encoding="utf-8").splitlines()
+    assert lines
+    used = {Path(json.loads(line)[key]).name for line in lines for key in ("src_file", "ref_file")}
+    assert "Albert_Kader_Whiptails_12_Vox_Wet.wav" not in used

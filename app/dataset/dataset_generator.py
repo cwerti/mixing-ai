@@ -18,6 +18,30 @@ from app.audio.audio_processor import AudioProcessor
 from app.mixing.chain_optimizer import normalize_lufs, to_stereo
 from app.ml.features import MODEL_LUFS, signal_features, window_seconds
 
+# Файлы из пула сухих вокалов Cambridge, которые на самом деле уже обработаны инженером (их сухие версии
+# лежат рядом). Как «сухой» исходник или голос референса они учат модель обрабатывать уже обработанное,
+# а в реальном бенчмарке служат истинной целью (scripts/real_pairs.py), поэтому из пула исключаются.
+PROCESSED_VOCAL_STEMS = frozenset({
+    "Albert_Kader_Whiptails_12_Vox_Wet",  # полная обработка; сухой дубль — _11_Vox_Dry
+    "Ronnie_Jones_Why_Dont_You_Stay_23_LeadVoxTapeEffect",  # ленточный эффект; сухой — _24_LeadVoxRaw
+    # Тюн; сухие версии — те же имена с суффиксом _NoPitchProcessing
+    "oxeye_Sorry_12_LeadVox",
+    "oxeye_Sorry_14_LeadVoxDT",
+    "oxeye_Sorry_16_BackingVox1",
+    "oxeye_Sorry_18_BackingVox2",
+    "oxeye_Sorry_20_BackingVox3",
+    "oxeye_Sorry_22_BackingVox4",
+})
+
+
+def is_dry_source(path: Path) -> bool:
+    """Подходит ли файл как сухой исходник: не служебный файл macOS, не пустой и не из списка обработанных."""
+    try:
+        return (not path.name.startswith("._") and path.stem not in PROCESSED_VOCAL_STEMS
+                and path.stat().st_size > 1000)
+    except OSError:
+        return False
+
 
 def _generate_balanced_random_config(rng: random.Random = random) -> ChainConfig:
     """
@@ -269,11 +293,7 @@ class DatasetGenerator:
         cambridge_dir = self.dry_dir / "cambridge"
         vctk_dir = self.dry_dir / "vctk"
 
-        def is_valid_audio(p: Path) -> bool:
-            try:
-                return not p.name.startswith("._") and p.stat().st_size > 1000
-            except Exception:
-                return False
+        is_valid_audio = is_dry_source
 
         cambridge_files: List[Path] = []
         vctk_files: List[Path] = []
