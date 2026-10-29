@@ -530,3 +530,93 @@ class VocalEnhancer:
 
 
 
+
+    def _shift_voice(self, y: np.ndarray, semitones: float, formant_shift: float) -> np.ndarray:
+        """
+        Сдвигает высоту моно-сигнала Rubber Band без изменения длины и задержки (латентность компенсирована).
+        Форманты: сначала весь голос (тон + форманты) сдвигается на formant_shift без сохранения формант,
+        затем тон — на остаток с сохранением формант. Итог: тон на semitones, форманты на formant_shift.
+        """
+        from pedalboard import time_stretch
+
+        voice = y[np.newaxis, :].astype(np.float32)
+        if abs(formant_shift) > 1e-3:
+            voice = time_stretch(voice, self.sr, 1.0, float(formant_shift), preserve_formants=False)
+        rest = semitones - formant_shift
+        if abs(rest) > 1e-3:
+            voice = time_stretch(voice, self.sr, 1.0, float(rest), preserve_formants=True)
+        voice = voice[0, :len(y)]
+        return np.pad(voice, (0, len(y) - len(voice)))
+
+    def harmony_layer(self, y: np.ndarray, semitones: float = 3.0, level_db: float = -8.0,
+                      formant_shift: float = 0.0, delay_ms: float = 0.0, detune_cents: float = 0.0,
+                      width: float = 0.0, mix: float = 1.0) -> np.ndarray | None:
+        """
+        Строит слой гармонии или дабла: копию голоса, сдвинутую на semitones полутонов (без самого голоса).
+
+        Копия строится из моно-суммы входа, приводится к RMS лидера и ставится на level_db ниже него.
+        При width == 0 слой один и стоит в центре; при width > 0 голосов два (L и R с панорамой ±width),
+        у них противоположная расстройка ±detune_cents и разное отставание (delay_ms и 0.6·delay_ms),
+        как у двух ручных даблов; суммарная мощность слоя по-прежнему level_db.
+
+        Args:
+            y: Голос-источник (1D моно или (2, n) стерео).
+            semitones: Интервал гармонии в полутонах (+3, +5, +7, ±12).
+            level_db: Уровень слоя относительно лидера в дБ (по RMS).
+            formant_shift: Сдвиг формант в полутонах (0 — форманты голоса сохранены).
+            delay_ms: Отставание слоя от лидера в мс.
+            detune_cents: Расстройка слоя в центах.
+            width: Ширина панорамы слоя (0..1).
+            mix: Общий фейдер слоя (0 — слоя нет).
+
+        Returns:
+            np.ndarray | None: Слой формы (2, n) или None, если слоя нет (mix = 0 или тишина).
+        """
+        if mix <= 0.0:
+            return None
+        mono = y if y.ndim == 1 else np.mean(y, axis=0)
+        lead_rms = float(np.sqrt(np.mean(mono ** 2)))
+        if lead_rms < 1e-9:
+            return None
+
+        detune = detune_cents / 100.0
+        if width > 0.0:
+            voices = [(semitones + detune, delay_ms, -width), (semitones - detune, 0.6 * delay_ms, width)]
+        else:
+            voices = [(semitones + detune, delay_ms, 0.0)]
+        voice_gain = mix * 10.0 ** (level_db / 20.0) / np.sqrt(len(voices))
+
+        layer = np.zeros((2, len(mono)), dtype=np.float32)
+        for shift, lag_ms, pan in voices:
+            voice = self._shift_voice(mono, shift, formant_shift)
+            voice_rms = float(np.sqrt(np.mean(voice ** 2)))
+            if voice_rms < 1e-9:
+                continue
+            voice *= voice_gain * lead_rms / voice_rms
+            lag = int(round(lag_ms / 1000.0 * self.sr))
+            if lag > 0:
+                voice = np.concatenate([np.zeros(lag, dtype=voice.dtype), voice[:-lag]])
+            # Равномощная панорама, нормированная на центр: в центре слой одинаков в обоих каналах
+            angle = (pan + 1.0) * np.pi / 4.0
+            layer[0] += np.sqrt(2.0) * np.cos(angle) * voice
+            layer[1] += np.sqrt(2.0) * np.sin(angle) * voice
+        return layer
+
+    @staticmethod
+    def add_layer(y: np.ndarray, layer: np.ndarray | None) -> np.ndarray:
+        """
+        Суммирует голос со слоем (2, n). Моно-голос остается моно, если слой в центре (каналы равны),
+        иначе становится стерео (2, n).
+        """
+        if layer is None:
+            return y
+        if y.ndim == 1 and np.array_equal(layer[0], layer[1]):
+            return (y + layer[0]).astype(y.dtype)
+        lead = np.vstack([y, y]) if y.ndim == 1 else y
+        if lead.shape[0] == 1:
+            lead = np.vstack([lead[0], lead[0]])
+        return (lead + layer).astype(lead.dtype)
+
+    def apply_harmony(self, y: np.ndarray, **layer_params: float) -> np.ndarray:
+        """Голос + слой гармонии (параметры как у harmony_layer); при mix = 0 вход возвращается без изменений."""
+        return self.add_layer(y, self.harmony_layer(y, **layer_params))

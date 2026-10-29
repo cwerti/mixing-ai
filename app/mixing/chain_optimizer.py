@@ -19,7 +19,7 @@ from app.audio.audio_processor import SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, DATAGEN_PLUGINS, PARAM_LAYOUT, PLUGIN_ON_PROB, ChainConfig, PluginConfig
+    CHAIN_ORDER, DATAGEN_PLUGINS, PARAM_LAYOUT, PLUGIN_ON_PROB, RENDER_ORDER, ChainConfig, PluginConfig
 )
 from app.eval.style_metrics import DEFAULT_WEIGHTS, extract_style_features, style_distance
 
@@ -228,9 +228,11 @@ class ChainOptimizer:
         self.matcher = SpectralMatcher(sr=sr)
 
     def _render(self, base: np.ndarray, eq_bands, plugins: dict[str, dict[str, float]],
-                gate_threshold_db: float | None) -> np.ndarray:
+                gate_threshold_db: float | None, fixed: tuple[PluginConfig, ...] = ()) -> np.ndarray:
         chain = ChainConfig(plugins=[eq_plugin(eq_bands)] if eq_bands else [])
         chain.plugins += [PluginConfig(name=name, params=params) for name, params in plugins.items()]
+        chain.plugins += list(fixed)
+        chain.plugins.sort(key=lambda plugin: RENDER_ORDER.index(plugin.name))
         return self.dsp.apply_chain(base, self.sr, chain, gate_threshold_db=gate_threshold_db)
 
     def _distance(self, y: np.ndarray, ref_features: dict) -> float:
@@ -263,7 +265,8 @@ class ChainOptimizer:
                  scale: str = "major", gate_threshold_db: float | None = None, budget_s: float = 60.0,
                  excerpt_s: float = 12.0, seed: int = 0, patience_renders: int | None = None,
                  min_improvement: float = 0.01, allow_tune: bool = True,
-                 tune_speed: float | None = None) -> OptimizationResult:
+                 tune_speed: float | None = None,
+                 fixed_plugins: list[PluginConfig] | None = None) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -283,8 +286,14 @@ class ChainOptimizer:
                 ВЧ-артефакты, поэтому пользователь может его запретить.
             tune_speed: Нормализованная сила тюна [0..1] вместо подбора по отклонению от нот референса
                 (на слух выбор может расходиться с метрикой).
+            fixed_plugins: Плагины, заданные цепочкой/архетипом явно (например, harmony): рендерятся во всех
+                пробах и попадают в итоговую цепочку как есть, но не подбираются и не выкидываются упрощением.
         """
         report = []
+        fixed = tuple(fixed_plugins or ())
+        clashing = [p.name for p in fixed if p.name in SEARCHABLE_PLUGINS or p.name in ("eq", "pitch_corrector")]
+        if clashing:
+            raise ValueError(f"fixed_plugins не должны пересекаться с подбираемыми плагинами: {clashing}")
 
         def note(message: str):
             report.append(message)
@@ -321,8 +330,8 @@ class ChainOptimizer:
         if model_probs and model_params:
             prior_plugins = {p: model_params[p] for p in SEARCHABLE_PLUGINS
                              if model_probs.get(p, 0.0) > PLUGIN_ON_PROB and p in model_params}
-            distance_prior = self._distance(self._render(excerpt, eq_bands, prior_plugins, gate_threshold_db),
-                                            ref_features)
+            distance_prior = self._distance(self._render(excerpt, eq_bands, prior_plugins, gate_threshold_db,
+                                                         fixed), ref_features)
             note(f"[*] Цепочка модели {list(prior_plugins)}: расстояние {distance_prior:.2f}")
 
         kept = {p for p in SEARCHABLE_PLUGINS if (model_probs or {}).get(p, 0.0) > MODEL_KEEP_PROB
@@ -341,7 +350,7 @@ class ChainOptimizer:
             return result
 
         def objective(params: dict[str, dict[str, float]]) -> float:
-            y = self._render(excerpt, eq_bands, params, gate_threshold_db)
+            y = self._render(excerpt, eq_bands, params, gate_threshold_db, fixed)
             return self._distance(y, ref_features) + self.intensity_penalty * self._intensity(params)
 
         best_score = objective(current)
@@ -397,7 +406,8 @@ class ChainOptimizer:
             if pitch_speed is not None:
                 chain.plugins.append(PluginConfig(name="pitch_corrector", params={"speed": pitch_speed}))
             chain.plugins += [PluginConfig(name=name, params=current[name]) for name in current]
-            chain.plugins.sort(key=lambda plugin: CHAIN_ORDER.index(plugin.name))
+            chain.plugins += list(fixed)
+            chain.plugins.sort(key=lambda plugin: RENDER_ORDER.index(plugin.name))
             return chain
 
         full_base = np.vstack([self.enhancer.suppress_resonances(ch) for ch in src]).astype(np.float32)
@@ -411,7 +421,8 @@ class ChainOptimizer:
             eq_bands = self.matcher.fit_eq_to_delta(residual + self.matcher.eq_curve_db(eq_bands))
 
         chain = build_chain(eq_bands)
-        distance_final = self._distance(self._render(excerpt, eq_bands, current, gate_threshold_db), ref_features)
+        distance_final = self._distance(self._render(excerpt, eq_bands, current, gate_threshold_db, fixed),
+                                        ref_features)
 
         note(f"[+] Расстояние до референса: исходник {distance_source:.2f}"
              + (f", модель {distance_prior:.2f}" if distance_prior is not None else "")

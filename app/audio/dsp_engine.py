@@ -158,6 +158,8 @@ class DSPEngine:
             effects.append(NoiseGate(threshold_db=gate_threshold_db, attack_ms=2.0, release_ms=100.0))
             
         y_working = y.copy()
+        # Лидер, из которого строятся слои гармонии (сигнал на месте первого плагина harmony)
+        harmony_source = None
         
         # Применение подавления резонансов (если плагин явно передан в цепочке)
         for plugin in chain_config.plugins:
@@ -398,6 +400,33 @@ class DSPEngine:
                 width_val = phys.get("width", 1.0)
                 y_working = enhancer.apply_stereo_enhancer(y_working, delay_ms=delay_val, width=width_val)
                 
+            elif plugin.name == "harmony":
+                # Параллельная шина гармонии/дабла: сдвигается сигнал после инсертов лидера, стоящих выше
+                # по цепочке, и сумма идет дальше (в реверб и дилей). Собственных инсертов у слоя нет.
+                # Все слои строятся из лидера на месте первого harmony, иначе второй слой сдвигал бы и первый.
+                if effects:
+                    board = Pedalboard(effects)
+                    try:
+                        y_working = board(y_working, sr)
+                    except Exception as e:
+                        print(f"[-] Ошибка обработки Pedalboard перед гармонией: {e}")
+                    effects = []
+                if harmony_source is None:
+                    harmony_source = y_working
+
+                from app.audio.vocal_enhancer import VocalEnhancer
+                enhancer = VocalEnhancer(sr=sr)
+                y_working = enhancer.add_layer(y_working, enhancer.harmony_layer(
+                    harmony_source,
+                    semitones=float(round(phys.get("semitones", 3.0))),
+                    level_db=phys.get("level_db", -8.0),
+                    formant_shift=phys.get("formant_shift", 0.0),
+                    delay_ms=phys.get("delay_ms", 0.0),
+                    detune_cents=phys.get("detune_cents", 0.0),
+                    width=phys.get("width", 0.0),
+                    mix=phys.get("mix", 1.0),
+                ))
+
             elif plugin.name == "reverb" or (vst_loaded is False and plugin.name == "valhalla_vintage_verb"):
                 wet_val = phys.get("wet_level", phys.get("mix", 0.1))
                 if wet_val > 1.0:
