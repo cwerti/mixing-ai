@@ -140,6 +140,17 @@ def test_match_eq_recovers_known_curve():
     assert all(low <= f <= high for (f, _), (low, high) in zip(bands, SpectralMatcher.BAND_RANGES_HZ))
 
 
+def test_eq_limits_register_region():
+    """Разница +15 дБ на низах (регистр другого голоса) ограничивается, середина и верх копируются полностью."""
+    matcher = SpectralMatcher(sr=44100)
+    grid = matcher._grid_hz
+    delta = np.where(grid < 250, 15.0, 0.0) + np.where(grid > 3000, -6.0, 0.0) - 20.0  # -20: общая громкость
+    limited = matcher.limit_register_delta(delta)
+    assert np.allclose(limited[grid < 250] + 20.0, matcher.low_gain_limit_db)
+    assert np.allclose(limited[grid > 3000], delta[grid > 3000])
+    assert SpectralMatcher(sr=44100, low_gain_limit_db=None).limit_register_delta(delta) is delta
+
+
 def test_match_eq_flat_for_identical_signals():
     """Для одинаковых сигналов EQ остается плоским."""
     sr = 44100
