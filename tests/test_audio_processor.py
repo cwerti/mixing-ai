@@ -161,7 +161,7 @@ def test_match_eq_flat_for_identical_signals():
 
 def test_eq_match_strength_scales_curve_around_level():
     """Доля переноса сжимает желаемую кривую к уровню середины: половина разницы — половина усилений."""
-    full, half = SpectralMatcher(sr=44100, low_gain_limit_db=None), SpectralMatcher(sr=44100, low_gain_limit_db=None,
+    full, half = SpectralMatcher(sr=44100, low_gain_limit_db=None, match_strength=1.0), SpectralMatcher(sr=44100, low_gain_limit_db=None,
                                                                                     match_strength=0.5)
     grid = full._grid_hz
     delta = np.where(grid > 3000, -8.0, 0.0) + np.where((grid > 800) & (grid < 1600), 4.0, 0.0)
