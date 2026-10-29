@@ -12,7 +12,7 @@ from app.audio.audio_processor import AudioProcessor
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, ChainConfig, PluginConfig
+    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, PLUGIN_ON_PROB, ChainConfig, PluginConfig
 )
 from app.ml.model import MixingAIModel
 
@@ -100,7 +100,7 @@ def render_vocal(source_path: str | Path, ref_path: str | Path, output_path: str
         probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
         pred_params_vec = pred_params.squeeze(0).cpu().numpy()
         
-    active_plugins = [CHAIN_ORDER[i] for i, prob in enumerate(probs) if prob > 0.5]
+    active_plugins = [CHAIN_ORDER[i] for i, prob in enumerate(probs) if prob > PLUGIN_ON_PROB]
     if "eq" not in active_plugins:
         active_plugins.insert(0, "eq")
     print(f"[+] Итоговая цепочка плагинов: {active_plugins}")

@@ -6,7 +6,7 @@ import numpy as np
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.audio.dsp_engine import DSPEngine
-from app.dataset.dataset_schema import ChainConfig, PluginConfig
+from app.dataset.dataset_schema import PLUGIN_ON_PROB, ChainConfig, PluginConfig
 from app.mixing.chain_optimizer import (
     CHAIN_INPUT_LUFS, DEFAULT_SIGMA, ChainOptimizer, _initial_params, _stagnated, normalize_lufs,
     physical_to_normalized, search_stds, select_excerpt, select_plugins, to_stereo,
@@ -72,6 +72,9 @@ def test_prior_start_only_for_plugins_the_model_enables():
     params = {"reverb": {"room_size": 0.9, "damping": 0.1, "wet_level": 0.7, "dry_level": 0.2}}
     assert _initial_params("reverb", {"reverb": 0.9}, params)["wet_level"] == 0.7
     assert _initial_params("reverb", {"reverb": 0.2}, params)["wet_level"] == 0.25
+    # граница та же, что при сборке цепочки моделью (PLUGIN_ON_PROB)
+    assert _initial_params("reverb", {"reverb": PLUGIN_ON_PROB + 0.01}, params)["wet_level"] == 0.7
+    assert _initial_params("reverb", {"reverb": PLUGIN_ON_PROB - 0.01}, params)["wet_level"] == 0.25
 
 
 def test_search_stds_narrow_around_confident_prior():

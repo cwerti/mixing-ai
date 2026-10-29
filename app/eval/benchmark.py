@@ -26,7 +26,7 @@ from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_generator import DatasetGenerator, _generate_balanced_random_config
-from app.dataset.dataset_schema import CHAIN_ORDER, ChainConfig
+from app.dataset.dataset_schema import CHAIN_ORDER, PLUGIN_ON_PROB, ChainConfig
 from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, select_excerpt, to_stereo
 
@@ -218,7 +218,7 @@ class ChainBenchmark:
                 if model_probs is None:
                     continue
                 from app.ml.pipeline import model_chain
-                plugins = [name for name in CHAIN_ORDER if name != "eq" and model_probs[name] > 0.5]
+                plugins = [name for name in CHAIN_ORDER if name != "eq" and model_probs[name] > PLUGIN_ON_PROB]
                 chain = model_chain(plugins, self.matcher.match_eq(case.src, case.ref), model_params)
                 add(mode, self.render(case, chain, gate), chain, time.perf_counter() - started)
                 continue

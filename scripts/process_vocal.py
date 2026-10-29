@@ -24,7 +24,7 @@ from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, DATAGEN_PLUGINS, ChainConfig
+    CHAIN_ORDER, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig
 )
 from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, to_stereo
@@ -154,7 +154,7 @@ def process_vocal(args):
 
     model_probs = {name: float(probs[i]) for i, name in enumerate(CHAIN_ORDER)}
     model_params = model_params_by_plugin(pred_params_vec)
-    model_plugins = [name for name in CHAIN_ORDER if name != "eq" and model_probs[name] > 0.5]
+    model_plugins = [name for name in CHAIN_ORDER if name != "eq" and model_probs[name] > PLUGIN_ON_PROB]
     print(f"[+] Цепочка, предложенная моделью: {model_plugins}")
 
     # 5. Сухой вокал подается в цепочку на том же уровне, что и при генерации датасета:

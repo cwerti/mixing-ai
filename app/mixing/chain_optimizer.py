@@ -18,7 +18,9 @@ import pyloudnorm as pyln
 from app.audio.audio_processor import SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
-from app.dataset.dataset_schema import CHAIN_ORDER, DATAGEN_PLUGINS, PARAM_LAYOUT, ChainConfig, PluginConfig
+from app.dataset.dataset_schema import (
+    CHAIN_ORDER, DATAGEN_PLUGINS, PARAM_LAYOUT, PLUGIN_ON_PROB, ChainConfig, PluginConfig
+)
 from app.eval.style_metrics import DEFAULT_WEIGHTS, extract_style_features, style_distance
 
 # Уровень, на котором сухой вокал подается в цепочку при генерации датасета (пороги плагинов рассчитаны на него)
@@ -170,7 +172,7 @@ def _uses_prior(plugin: str, model_probs: dict[str, float] | None,
     """
     if not model_params or plugin not in model_params:
         return False
-    return model_probs is None or model_probs.get(plugin, 0.0) > 0.5
+    return model_probs is None or model_probs.get(plugin, 0.0) > PLUGIN_ON_PROB
 
 
 def _default_params(plugin: str) -> dict[str, float]:
@@ -318,7 +320,7 @@ class ChainOptimizer:
         distance_prior = None
         if model_probs and model_params:
             prior_plugins = {p: model_params[p] for p in SEARCHABLE_PLUGINS
-                             if model_probs.get(p, 0.0) > 0.5 and p in model_params}
+                             if model_probs.get(p, 0.0) > PLUGIN_ON_PROB and p in model_params}
             distance_prior = self._distance(self._render(excerpt, eq_bands, prior_plugins, gate_threshold_db),
                                             ref_features)
             note(f"[*] Цепочка модели {list(prior_plugins)}: расстояние {distance_prior:.2f}")

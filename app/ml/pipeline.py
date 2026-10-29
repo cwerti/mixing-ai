@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, ChainConfig, PluginConfig
+    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig, PluginConfig
 )
 from app.mixing.chain_optimizer import eq_plugin
 from app.ml.features import model_inputs
@@ -97,7 +97,7 @@ class MixingAIMLPipeline:
             probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
             pred_params_vec = pred_params.squeeze(0).cpu().numpy()
 
-        active_plugins = [CHAIN_ORDER[i] for i, prob in enumerate(probs) if prob > 0.5]
+        active_plugins = [CHAIN_ORDER[i] for i, prob in enumerate(probs) if prob > PLUGIN_ON_PROB]
         if "eq" not in active_plugins:
             active_plugins.insert(0, "eq")
 

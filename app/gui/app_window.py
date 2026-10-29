@@ -21,7 +21,7 @@ from app.audio.vocal_enhancer import VocalEnhancer
 from app.ml.model import MixingAIModel
 from app.presets.preset_generator import PresetGenerator
 from app.presets.full_preset_generator import FullPresetGenerator
-from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS
+from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, PLUGIN_ON_PROB
 
 class EQVisualizer(QFrame):
     """
@@ -386,7 +386,7 @@ class AnalysisThread(QThread):
                 
                 # Классификация
                 probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
-                active_plugins = (probs > 0.5).astype(int)
+                active_plugins = (probs > PLUGIN_ON_PROB).astype(int)
                 
                 # Регрессия параметров
                 params = pred_params.squeeze(0).cpu().numpy()

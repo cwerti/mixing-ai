@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
-from app.dataset.dataset_schema import ChainConfig, PluginConfig
+from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PLUGIN_ON_PROB, ChainConfig, PluginConfig
 from app.eval.benchmark import ChainBenchmark, make_case, renders_to_fraction, renders_to_level, summarize
 from app.mixing.chain_optimizer import physical_to_normalized
 from synthetic_audio import synthetic_vocal
@@ -63,6 +63,21 @@ def test_oracle_rendered_with_mode_gate():
     bench.run_case(case, modes=("optimizer",), budget_s=2.0, excerpt_s=6.0)
 
     assert len(gates) == 2 and gates[0] is not None and gates[0] == gates[1]
+
+
+def test_model_mode_uses_plugin_on_threshold():
+    """Режим model включает плагин только выше PLUGIN_ON_PROB: чуть ниже порога плагина в цепочке нет."""
+    case = make_case("pair", synthetic_vocal(SR, seconds=4.0, seed=1), synthetic_vocal(SR, seconds=4.0, seed=2),
+                     _reverb_chain(), SR)
+    probs = {name: 0.0 for name in CHAIN_ORDER}
+    probs.update(reverb=PLUGIN_ON_PROB + 0.01, deesser=PLUGIN_ON_PROB - 0.01)
+    params = {name: {p: 0.5 for p in PARAM_LAYOUT[name]} for name in ("reverb", "deesser")}
+    bench = ChainBenchmark(sr=SR, prior=lambda src, ref: (probs, params, None), with_pitch=False,
+                           log=lambda _: None)
+
+    row = bench.run_case(case, modes=("model",), with_baselines=False)[0]
+
+    assert row["plugins"] == ["eq", "reverb"]
 
 
 def test_summarize_head_to_head():
