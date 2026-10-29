@@ -176,8 +176,9 @@ class ChainBenchmark:
         gate = self.processor.estimate_noise_gate_threshold(librosa.to_mono(case.src))
         rows = []
         # Расстояние до исходника, обработанного истинной цепочкой: голос тот же, поэтому оно меряет только
-        # обработку, без разницы тембров певцов, которую цепочка повторять не должна (например, регистр в EQ)
-        oracle_y = self.render(case, case.oracle_chain, None) if case.oracle_chain is not None else None
+        # обработку, без разницы тембров певцов, которую цепочка повторять не должна (например, регистр в EQ).
+        # Гейт тот же, что у режимов (и в process_vocal.py): иначе в distance_true попадает сам гейт, а не цепочка
+        oracle_y = self.render(case, case.oracle_chain, gate) if case.oracle_chain is not None else None
         true_features = (extract_style_features(oracle_y, self.sr, with_pitch=self.with_pitch)
                          if oracle_y is not None else None)
 

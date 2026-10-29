@@ -51,6 +51,20 @@ def test_run_case_cross_performance():
     assert "| oracle | 1 | " in summary and "| 0.00 |" in summary
 
 
+def test_oracle_rendered_with_mode_gate():
+    """Истинная цепочка рендерится с тем же гейтом, что и режимы, иначе distance_true меряет гейт, а не цепочку."""
+    case = make_case("pair", synthetic_vocal(SR, seconds=6.0, seed=1), synthetic_vocal(SR, seconds=6.0, seed=2),
+                     _reverb_chain(), SR)
+    bench = ChainBenchmark(sr=SR, prior=None, with_pitch=False, log=lambda _: None)
+    gates = []
+    render = bench.render
+    bench.render = lambda c, chain, gate: gates.append(gate) or render(c, chain, gate)
+
+    bench.run_case(case, modes=("optimizer",), budget_s=2.0, excerpt_s=6.0)
+
+    assert len(gates) == 2 and gates[0] is not None and gates[0] == gates[1]
+
+
 def test_summarize_head_to_head():
     """Сравнение с моделью и без считается по парам (пара, seed) с допуском 0.05."""
     rows = [
