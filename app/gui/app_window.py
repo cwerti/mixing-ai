@@ -13,7 +13,7 @@ from PySide6.QtGui import QPainter, QColor, QPen, QDrag, QPixmap, QIcon, QPainte
 ROOT_DIR = Path(__file__).parent.parent.parent.absolute()
 sys.path.append(str(ROOT_DIR))
 
-DEFAULT_MODEL_PATH = ROOT_DIR / "data" / "models" / "v3" / "best_model.pth"
+DEFAULT_MODEL_PATH = ROOT_DIR / "data" / "models" / "v4" / "best_model.pth"
 
 from app.audio.audio_processor import AudioProcessor
 from app.audio.dsp_engine import DSPEngine

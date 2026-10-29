@@ -210,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=str, default="data/raw/source/source.wav", help="Путь к сухому вокалу")
     parser.add_argument("--ref", type=str, default="data/raw/reference/reference.wav", help="Путь к референсному вокалу")
     parser.add_argument("--output", type=str, default="data/processed/res.wav", help="Путь для сохранения обработанного файла")
-    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Путь к файлу весов модели")
+    parser.add_argument("--model-path", type=str, default="data/models/v4/best_model.pth", help="Путь к файлу весов модели")
     parser.add_argument("--max-len", type=int, default=700, help="Длина спектрограммы")
     
     args = parser.parse_args()

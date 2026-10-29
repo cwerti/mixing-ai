@@ -5,7 +5,7 @@
 Оптимизатор берет ее как начальный шаг CMA-ES вокруг старта от модели: где сеть точна, поиск уже.
 
 Пример:
-    python scripts/calibrate_prior.py --model-path data/models/v3/best_model.pth --dataset-dir data/processed/dataset_v2
+    python scripts/calibrate_prior.py --model-path data/models/v4/best_model.pth --dataset-dir data/processed/dataset_v3
 
 Результат: <model>.calibration.json рядом с весами (читает app.ml.pipeline.load_param_std).
 """
@@ -63,8 +63,8 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ошибка параметров модели на валидации для шага CMA-ES")
-    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Веса MixingAIModel")
-    parser.add_argument("--dataset-dir", type=str, default="data/processed/dataset_v2", help="Датасет с index.jsonl")
+    parser.add_argument("--model-path", type=str, default="data/models/v4/best_model.pth", help="Веса MixingAIModel")
+    parser.add_argument("--dataset-dir", type=str, default="data/processed/dataset_v3", help="Датасет с index.jsonl")
     parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы, как при обучении")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)

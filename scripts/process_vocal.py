@@ -249,7 +249,7 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=str, required=True, help="Путь к вашему сухому вокалу (WAV)")
     parser.add_argument("--ref", type=str, required=True, help="Путь к референсному треку (WAV или MP3)")
     parser.add_argument("--extract-vocals", action="store_true", help="Принудительно изолировать вокал из референса через Demucs")
-    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Путь к весам обученной нейросети")
+    parser.add_argument("--model-path", type=str, default="data/models/v4/best_model.pth", help="Путь к весам обученной нейросети")
     parser.add_argument("--output-fst", type=str, default="data/processed/vocal_mastering.fst", help="Путь сохранения пресета FL Studio")
     parser.add_argument("--output-wav", type=str, default="data/processed/mixed_vocal_preview.wav", help="Путь сохранения WAV превью")
     parser.add_argument("--no-audio-render", action="store_true", help="Отключить генерацию WAV превью (быстрее, только .fst)")

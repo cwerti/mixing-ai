@@ -77,7 +77,7 @@ if __name__ == "__main__":
     parser.add_argument("--manifest", type=str, default=None,
                         help='JSON с реальными парами: [{"name": ..., "source": ..., "ref": ...}]')
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES), help="Режимы для сравнения")
-    parser.add_argument("--model-path", type=str, default="data/models/v3/best_model.pth", help="Веса MixingAIModel")
+    parser.add_argument("--model-path", type=str, default="data/models/v4/best_model.pth", help="Веса MixingAIModel")
     parser.add_argument("--budget", type=float, default=60.0, help="Время на CMA-ES на одну пару, секунд")
     parser.add_argument("--patience", type=int, default=None,
                         help="Остановить CMA-ES, если за столько рендеров улучшение меньше 0.01")
