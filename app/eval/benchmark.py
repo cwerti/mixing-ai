@@ -175,12 +175,18 @@ class ChainBenchmark:
         ref_features = extract_style_features(case.ref, self.sr, with_pitch=self.with_pitch)
         gate = self.processor.estimate_noise_gate_threshold(librosa.to_mono(case.src))
         rows = []
+        # Расстояние до исходника, обработанного истинной цепочкой: голос тот же, поэтому оно меряет только
+        # обработку, без разницы тембров певцов, которую цепочка повторять не должна (например, регистр в EQ)
+        oracle_y = self.render(case, case.oracle_chain, None) if case.oracle_chain is not None else None
+        true_features = (extract_style_features(oracle_y, self.sr, with_pitch=self.with_pitch)
+                         if oracle_y is not None else None)
 
         def add(mode: str, y: np.ndarray, chain: ChainConfig | None, seconds: float = 0.0,
                 history: list[tuple[int, float]] | None = None):
             distance, per_feature = self._distance(y, ref_features)
             rows.append({
                 "case": case.name, "mode": mode, "seed": seed, "distance": distance,
+                "distance_true": self._distance(y, true_features)[0] if true_features is not None else None,
                 "per_feature": per_feature, "seconds": seconds,
                 "plugins": [p.name for p in chain.plugins] if chain else [],
                 "renders": history[-1][0] if history else None,
@@ -197,8 +203,8 @@ class ChainBenchmark:
         self.log(f"[*] {case.name} (тональность {case.key_index} {case.scale}, seed {seed})")
         if with_baselines:
             add("source", case.src, None)
-        if with_baselines and case.oracle_chain is not None:
-            add("oracle", self.render(case, case.oracle_chain, None), case.oracle_chain)
+        if with_baselines and oracle_y is not None:
+            add("oracle", oracle_y, case.oracle_chain)
 
         model_probs = model_params = model_param_std = None
         if self.prior is not None and any(m.startswith("model") for m in modes):
@@ -237,15 +243,18 @@ def summarize(rows: list[dict]) -> str:
         by_mode.setdefault(row["mode"], []).append(row)
     source = {r["case"]: r["distance"] for r in by_mode.get("source", [])}
 
-    lines = ["| Режим | N | Расстояние (среднее) | Медиана | От исходника | Рендеров до 90% | Время, с |",
-             "|---|---|---|---|---|---|---|"]
+    lines = ["| Режим | N | Расстояние (среднее) | Медиана | От исходника | До истинной цепочки | "
+             "Рендеров до 90% | Время, с |",
+             "|---|---|---|---|---|---|---|---|"]
     for mode, items in by_mode.items():
         distances = np.array([r["distance"] for r in items])
         ratios = [r["distance"] / source[r["case"]] for r in items if source.get(r["case"], 0) > 0]
+        to_true = [r["distance_true"] for r in items if r.get("distance_true") is not None]
         to_90 = [r["renders_to_90"] for r in items if r["renders_to_90"] is not None]
         seconds = [r["seconds"] for r in items if r["seconds"]]
         lines.append(f"| {mode} | {len(items)} | {distances.mean():.2f} | {np.median(distances):.2f} | "
                      + (f"{np.mean(ratios):.0%}" if ratios else "—") + " | "
+                     + (f"{np.mean(to_true):.2f}" if to_true else "—") + " | "
                      + (f"{np.mean(to_90):.0f}" if to_90 else "—") + " | "
                      + (f"{np.mean(seconds):.0f}" if seconds else "—") + " |")
 

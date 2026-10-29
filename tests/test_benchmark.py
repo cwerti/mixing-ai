@@ -42,8 +42,13 @@ def test_run_case_cross_performance():
     optimizer_row = next(row for row in rows if row["mode"] == "optimizer")
     assert optimizer_row["renders"] >= optimizer_row["renders_to_90"] >= 1
 
+    true_distance = {row["mode"]: row["distance_true"] for row in rows}
+    assert true_distance["oracle"] == 0.0
+    assert true_distance["optimizer"] < true_distance["source"]
+
     summary = summarize(rows)
     assert "| optimizer | 1 |" in summary
+    assert "| oracle | 1 | " in summary and "| 0.00 |" in summary
 
 
 def test_summarize_head_to_head():
