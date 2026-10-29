@@ -25,7 +25,7 @@ import soundfile as sf
 from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
-from app.dataset.dataset_generator import DatasetGenerator, _generate_balanced_random_config
+from app.dataset.dataset_generator import DatasetGenerator, _generate_balanced_random_config, is_dry_source
 from app.dataset.dataset_schema import CHAIN_ORDER, PLUGIN_ON_PROB, ChainConfig
 from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, select_excerpt, to_stereo
@@ -78,8 +78,7 @@ def synthetic_cases(dry_dir: str | Path, n: int, sr: int = 44100, seconds: float
     Собирает n пар из песен валидационной части датасета (тот же split, что при обучении, чтобы модель
     не видела эти голоса). Исходник и референс всегда из разных песен; берутся лид-вокалы, если они есть.
     """
-    files = [f for ext in ("*.wav", "*.flac") for f in Path(dry_dir).rglob(ext)
-             if not f.name.startswith("._") and f.stat().st_size > 1000]
+    files = [f for ext in ("*.wav", "*.flac") for f in Path(dry_dir).rglob(ext) if is_dry_source(f)]
     if not files:
         raise FileNotFoundError(f"Сухие вокалы не найдены в {dry_dir}")
     _, val_files = DatasetGenerator._split_files_by_group(files, val_ratio=0.15)
@@ -190,6 +189,7 @@ class ChainBenchmark:
                 "distance_true": self._distance(y, true_features)[0] if true_features is not None else None,
                 "per_feature": per_feature, "seconds": seconds,
                 "plugins": [p.name for p in chain.plugins] if chain else [],
+                "chain": [{"name": p.name, "params": dict(p.params)} for p in chain.plugins] if chain else [],
                 "renders": history[-1][0] if history else None,
                 "renders_to_90": renders_to_fraction(history) if history else None,
                 "history": history or [],
