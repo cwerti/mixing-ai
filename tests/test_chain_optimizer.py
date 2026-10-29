@@ -113,3 +113,19 @@ def test_enhancer_added_with_reverb_when_notes_are_narrow():
     ref = dict(base, decay_fast_db=-12.0, width_global=0.3, width_notes_db=-15.0)
     assert {"reverb", "stereo_enhancer"} <= set(select_plugins(base, ref, None)[0])
     assert "stereo_enhancer" not in select_plugins(base, dict(ref, width_notes_db=-28.0), None)[0]
+
+
+def test_optimizer_keeps_confident_plugins_and_unmeasured_params():
+    """Плагин, в котором модель уверена, не выкидывается, а скорость и глубина хоруса остаются как у модели."""
+    dry = synthetic_vocal(SR, seconds=8.0, seed=3)
+    ref = _render_reference(dry)
+    probs = {"chorus": 0.95, "compressor": 0.95}
+    params = {"chorus": {"rate_hz": 0.1, "depth": 0.2, "feedback": 0.3, "mix": 0.3},
+              "compressor": {"threshold_db": 0.2, "ratio": 0.6, "attack_ms": 0.1, "release_ms": 0.3}}
+
+    result = ChainOptimizer(sr=SR, log=lambda _: None).optimize(
+        dry, ref, model_probs=probs, model_params=params, budget_s=5.0, excerpt_s=8.0, patience_renders=40)
+
+    plugins = {plugin.name: plugin.params for plugin in result.chain.plugins}
+    assert {"chorus", "compressor"} <= set(plugins)
+    assert (plugins["chorus"]["rate_hz"], plugins["chorus"]["depth"], plugins["chorus"]["feedback"]) == (0.1, 0.2, 0.3)

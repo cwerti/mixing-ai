@@ -117,7 +117,7 @@ def test_match_eq_recovers_known_curve():
     from pedalboard import HighShelfFilter, LowShelfFilter, PeakFilter, Pedalboard
 
     sr = 44100
-    matcher = SpectralMatcher(sr=sr)
+    matcher = SpectralMatcher(sr=sr, match_strength=1.0)  # проверяется точность подбора, а не доля переноса
     true_gains = [-4.0, 3.0, 0.0, -2.0, 4.0, 0.0, 5.0]
     centers = SpectralMatcher.BAND_CENTERS_HZ
     board = Pedalboard(
@@ -157,3 +157,15 @@ def test_match_eq_flat_for_identical_signals():
     dry = _phrased_noise(sr)
     bands = SpectralMatcher(sr=sr).match_eq(dry, dry.copy())
     assert all(abs(gain) < 0.5 for _, gain in bands)
+
+
+def test_eq_match_strength_scales_curve_around_level():
+    """Доля переноса сжимает желаемую кривую к уровню середины: половина разницы — половина усилений."""
+    full, half = SpectralMatcher(sr=44100, low_gain_limit_db=None), SpectralMatcher(sr=44100, low_gain_limit_db=None,
+                                                                                    match_strength=0.5)
+    grid = full._grid_hz
+    delta = np.where(grid > 3000, -8.0, 0.0) + np.where((grid > 800) & (grid < 1600), 4.0, 0.0)
+    curve_full = full.eq_curve_db(full.fit_eq_to_delta(delta))
+    curve_half = half.eq_curve_db(half.fit_eq_to_delta(delta))
+    vocal = (grid >= 200) & (grid <= 12000)
+    assert np.max(np.abs(curve_half[vocal] - 0.5 * curve_full[vocal])) < 1.5

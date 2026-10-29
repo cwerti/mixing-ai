@@ -535,9 +535,15 @@ class SpectralMatcher:
     REGISTER_RANGE_HZ = (250.0, 500.0)
     LEVEL_RANGE_HZ = (500.0, 4000.0)
 
-    def __init__(self, sr: int = 44100, low_gain_limit_db: float | None = 2.0):
+    def __init__(self, sr: int = 44100, low_gain_limit_db: float | None = 2.0, match_strength: float = 0.3):
+        """
+        Args:
+            match_strength: Какая доля разницы спектров переносится в EQ. В середине и на верху разница тоже
+                отчасти тембр другого певца (свои форманты), а не обработка, поэтому полный перенос ее копирует.
+        """
         self.sr = sr
         self.low_gain_limit_db = low_gain_limit_db
+        self.match_strength = match_strength
         self._grid_hz = np.geomspace(*self.FIT_RANGE_HZ, 96)
         # Ниже 80 Гц у вокала гул, а не тембр: подъем туда не нужен, и эта область почти не влияет на подбор
         self._weights = np.clip((self._grid_hz / 80.0) ** 2, 0.1, 1.0)
@@ -633,17 +639,23 @@ class SpectralMatcher:
         """Ограничивает желаемую разницу спектров в области основного тона (см. REGISTER_RANGE_HZ)."""
         if self.low_gain_limit_db is None:
             return delta
-        # Общая громкость в EQ не попадает, поэтому предел отсчитывается от уровня середины
-        level = float(np.median(delta[(self._grid_hz >= self.LEVEL_RANGE_HZ[0])
-                                      & (self._grid_hz <= self.LEVEL_RANGE_HZ[1])]))
+        level = self._delta_level(delta)
         low, high = self.REGISTER_RANGE_HZ
         t = np.clip(np.log2(self._grid_hz / low) / np.log2(high / low), 0.0, 1.0)
         limit = self.low_gain_limit_db + t * (self.MAX_GAIN_DB - self.low_gain_limit_db)
         return level + np.clip(delta - level, -limit, limit)
 
+    def _delta_level(self, delta: np.ndarray) -> float:
+        """Общая громкость в EQ не попадает, поэтому пределы и доля переноса отсчитываются от уровня середины."""
+        return float(np.median(delta[(self._grid_hz >= self.LEVEL_RANGE_HZ[0])
+                                     & (self._grid_hz <= self.LEVEL_RANGE_HZ[1])]))
+
     def fit_eq_to_delta(self, delta: np.ndarray) -> list[tuple[float, float]]:
         """Подбирает полосы EQ под желаемую разницу спектров на сетке частот (см. match_eq)."""
         delta = self.limit_register_delta(delta)
+        if self.match_strength != 1.0:
+            level = self._delta_level(delta)
+            delta = level + self.match_strength * (delta - level)
         centers = list(self.BAND_CENTERS_HZ)
         gains, best_error = self._fit_gains(delta, centers)
 

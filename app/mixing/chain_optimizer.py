@@ -42,6 +42,12 @@ PARAM_INTENSITY = {
 DEFAULT_SIGMA = 0.2
 PRIOR_SIGMA_RANGE = (0.05, DEFAULT_SIGMA)
 
+# Параметры, которых метрика стиля не слышит (в ней нет признаков модуляции): CMA-ES крутит их до упора ради
+# мелких сдвигов спектра, и хорус начинает «плавать». Они не подбираются, а берутся у модели или по умолчанию.
+UNMEASURED_PARAMS = {("chorus", "rate_hz"), ("chorus", "depth"), ("chorus", "feedback")}
+# Плагины, в которых модель уверена настолько, что подбор их не выключает (компрессию метрика видит плохо)
+MODEL_KEEP_PROB = 0.9
+
 # Плагины, которые подбирает оптимизатор (EQ считается аналитически, автотюн — отдельно вне цикла)
 SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and name != "pitch_corrector"]
 
@@ -317,12 +323,17 @@ class ChainOptimizer:
                                             ref_features)
             note(f"[*] Цепочка модели {list(prior_plugins)}: расстояние {distance_prior:.2f}")
 
+        kept = {p for p in SEARCHABLE_PLUGINS if (model_probs or {}).get(p, 0.0) > MODEL_KEEP_PROB
+                and _uses_prior(p, model_probs, model_params)}
+        if kept - set(plugins):
+            note(f"[*] По уверенности модели добавлены: {sorted(kept - set(plugins))}")
+        plugins = [p for p in SEARCHABLE_PLUGINS if p in set(plugins) | kept]
         prior_plugins = {p for p in plugins if _uses_prior(p, model_probs, model_params)}
         current = {p: _initial_params(p, model_probs, model_params) for p in plugins}
-        layout = [(p, k) for p in plugins for k in PARAM_LAYOUT[p]]
+        layout = [(p, k) for p in plugins for k in PARAM_LAYOUT[p] if (p, k) not in UNMEASURED_PARAMS]
 
         def unpack(x) -> dict[str, dict[str, float]]:
-            result = {p: {} for p in plugins}
+            result = {p: {k: v for k, v in current[p].items() if (p, k) in UNMEASURED_PARAMS} for p in plugins}
             for (p, k), value in zip(layout, x):
                 result[p][k] = float(value)
             return result
@@ -335,7 +346,8 @@ class ChainOptimizer:
         history = [(1, best_score)]
         if prior_plugins:
             # Страховка от промаха модели: если мягкий старт без нее лучше, поиск идет от него с широким шагом
-            fallback = {p: _default_params(p) for p in plugins}
+            fallback = {p: {**_default_params(p), **{k: v for k, v in current[p].items()
+                                                     if (p, k) in UNMEASURED_PARAMS}} for p in plugins}
             fallback_score = objective(fallback)
             history.append((2, min(best_score, fallback_score)))
             if fallback_score < best_score:
@@ -367,7 +379,7 @@ class ChainOptimizer:
                  f"целевая функция {best_score:.2f}")
 
         # Упрощение: убираем плагины, без которых результат не хуже (лишняя обработка = риск артефактов)
-        for name in list(current):
+        for name in [p for p in current if p not in kept]:
             reduced = {p: v for p, v in current.items() if p != name}
             score = objective(reduced)
             if score <= best_score + 0.02:
