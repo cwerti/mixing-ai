@@ -50,6 +50,10 @@ UNMEASURED_PARAMS = {("chorus", "rate_hz"), ("chorus", "depth"), ("chorus", "fee
 # Плагины, в которых модель уверена настолько, что подбор их не выключает (компрессию метрика видит плохо)
 MODEL_KEEP_PROB = 0.9
 
+# Метрики целевой функции CMA-ES: style — ручная style_distance (по умолчанию), embedding — обученный
+# кодировщик стиля обработки (app/eval/style_embedding.py), combined — их сумма в общих единицах
+METRICS = ("style", "embedding", "combined")
+
 # Плагины, которые подбирает оптимизатор (EQ считается аналитически, автотюн — отдельно вне цикла)
 SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and name != "pitch_corrector"]
 
@@ -218,7 +222,20 @@ class ChainOptimizer:
     """Подбирает плагины и параметры цепочки, минимизируя расстояние по стилю до референса."""
 
     def __init__(self, sr: int = 44100, weights: dict | None = None, intensity_penalty: float = 0.15,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, metric: str = "style", encoder=None):
+        """
+        Args:
+            metric: Целевая функция подбора, одна из METRICS. Для embedding/combined нужен обученный
+                кодировщик (encoder или чекпоинт по умолчанию data/models/style_encoder/style_encoder.pt).
+            encoder: app.eval.style_embedding.StyleEncoder; None — загрузить чекпоинт по умолчанию.
+        """
+        if metric not in METRICS:
+            raise ValueError(f"Неизвестная метрика {metric!r}, допустимы {METRICS}")
+        self.metric = metric
+        self.encoder = encoder
+        if metric != "style" and encoder is None:
+            from app.eval.style_embedding import load_encoder
+            self.encoder = load_encoder()
         self.sr = sr
         self.weights = dict(DEFAULT_WEIGHTS if weights is None else weights)
         self.intensity_penalty = intensity_penalty
@@ -235,8 +252,24 @@ class ChainOptimizer:
         chain.plugins.sort(key=lambda plugin: RENDER_ORDER.index(plugin.name))
         return self.dsp.apply_chain(base, self.sr, chain, gate_threshold_db=gate_threshold_db)
 
-    def _distance(self, y: np.ndarray, ref_features: dict) -> float:
-        return style_distance(extract_style_features(y, self.sr, with_pitch=False), ref_features, self.weights)[0]
+    def _reference_target(self, y_ref: np.ndarray, ref_features: dict) -> dict:
+        """Что нужно метрике от референса: признаки style_distance и (для embedding/combined) эмбеддинг."""
+        target = {"features": ref_features}
+        if self.metric != "style":
+            target["embedding"] = self.encoder.embed(y_ref, self.sr)
+        return target
+
+    def _distance(self, y: np.ndarray, target: dict) -> float:
+        if self.metric == "style":
+            return style_distance(extract_style_features(y, self.sr, with_pitch=False), target["features"],
+                                  self.weights)[0]
+        from app.eval.style_embedding import EMBEDDING_SCALE, combined_distance
+        emb = self.encoder.distance(self.encoder.embed(y, self.sr), target["embedding"])
+        if self.metric == "embedding":
+            return EMBEDDING_SCALE * emb
+        style = style_distance(extract_style_features(y, self.sr, with_pitch=False), target["features"],
+                               self.weights)[0]
+        return combined_distance(style, emb)
 
     def _intensity(self, plugins: dict[str, dict[str, float]]) -> float:
         values = [v if PARAM_INTENSITY[(p, k)] > 0 else 1.0 - v
@@ -302,10 +335,11 @@ class ChainOptimizer:
         src = to_stereo(normalize_lufs(y_src, self.sr, CHAIN_INPUT_LUFS))
         ref_features = extract_style_features(y_ref, self.sr)
         src_features = extract_style_features(src, self.sr)
+        target = self._reference_target(y_ref, ref_features)
 
         excerpt = select_excerpt(src, self.sr, excerpt_s)
         excerpt = np.vstack([self.enhancer.suppress_resonances(ch) for ch in excerpt]).astype(np.float32)
-        distance_source = self._distance(excerpt, ref_features)
+        distance_source = self._distance(excerpt, target)
 
         plugins, reasons = select_plugins(src_features, ref_features, model_probs)
         note("[*] Выбор плагинов по разнице признаков:")
@@ -331,7 +365,7 @@ class ChainOptimizer:
             prior_plugins = {p: model_params[p] for p in SEARCHABLE_PLUGINS
                              if model_probs.get(p, 0.0) > PLUGIN_ON_PROB and p in model_params}
             distance_prior = self._distance(self._render(excerpt, eq_bands, prior_plugins, gate_threshold_db,
-                                                         fixed), ref_features)
+                                                         fixed), target)
             note(f"[*] Цепочка модели {list(prior_plugins)}: расстояние {distance_prior:.2f}")
 
         kept = {p for p in SEARCHABLE_PLUGINS if (model_probs or {}).get(p, 0.0) > MODEL_KEEP_PROB
@@ -351,7 +385,7 @@ class ChainOptimizer:
 
         def objective(params: dict[str, dict[str, float]]) -> float:
             y = self._render(excerpt, eq_bands, params, gate_threshold_db, fixed)
-            return self._distance(y, ref_features) + self.intensity_penalty * self._intensity(params)
+            return self._distance(y, target) + self.intensity_penalty * self._intensity(params)
 
         best_score = objective(current)
         history = [(1, best_score)]
@@ -422,7 +456,7 @@ class ChainOptimizer:
 
         chain = build_chain(eq_bands)
         distance_final = self._distance(self._render(excerpt, eq_bands, current, gate_threshold_db, fixed),
-                                        ref_features)
+                                        target)
 
         note(f"[+] Расстояние до референса: исходник {distance_source:.2f}"
              + (f", модель {distance_prior:.2f}" if distance_prior is not None else "")

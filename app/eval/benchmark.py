@@ -136,13 +136,16 @@ class ChainBenchmark:
     """Прогоняет режимы подбора на парах и меряет итоговое расстояние по стилю на всем исходнике."""
 
     def __init__(self, sr: int = 44100, prior: Callable | None = None, with_pitch: bool = True,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, metric: str = "style"):
         """
         Args:
             prior: Функция (y_src, y_ref) -> (model_probs, model_params, model_param_std) по сырым сигналам,
                 например MixingAIMLPipeline.predict_prior. Без нее режимы с моделью пропускаются.
             with_pitch: Учитывать ли отклонение от нот (pyin медленный).
+            metric: Целевая функция подбора в ChainOptimizer (style / embedding / combined). Колонка
+                distance в результатах всегда style_distance, чтобы прогоны были сравнимы.
         """
+        self.metric = metric
         self.sr = sr
         self.prior = prior
         self.with_pitch = with_pitch
@@ -211,7 +214,7 @@ class ChainBenchmark:
         if self.prior is not None and any(m.startswith("model") for m in modes):
             model_probs, model_params, model_param_std = self.prior(case.src, case.ref)
 
-        optimizer = ChainOptimizer(sr=self.sr, log=lambda _: None)
+        optimizer = ChainOptimizer(sr=self.sr, log=lambda _: None, metric=self.metric)
         for mode in modes:
             started = time.perf_counter()
             if mode == "model":
