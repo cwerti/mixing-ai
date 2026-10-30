@@ -254,3 +254,19 @@ python scripts/real_pairs.py --model-path data/models/v5/best_model.pth --modes 
 ```
 
 Время: датасет 1 ч 36 мин (20 ядер), обучение 1 ч 38 мин (RTX 5070), сравнение около 12 мин.
+
+## Итоговое сравнение систем на 8 настоящих парах (2026-10-30)
+
+Средняя log-mel ошибка до настоящего wet, дБ (сухой исходник: 2.47). `data/runs/benchmark/real_pairs*.jsonl`.
+
+| Система | same-take | cross-section |
+|---|---|---|
+| v4 + style (было) | 2.39 | 3.06 |
+| v4 + embedding | 2.10 | 2.72 |
+| v5 + embedding, model+optimizer | **1.92** | 2.84 |
+| v5 + embedding, optimizer без модели | 2.11 | **2.67** |
+
+- Whiptails (сильная обработка): 11.5 → ~5.3 дБ у всех вариантов с новой метрикой; v5 больше не ставит хорус.
+- Ronnie tape: v5 same-take 3.63 → 2.47 (eq+compressor+distortion — то, что делает лента), но cross 7.55
+  (лишние reverb и exciter) — модель нестабильна на референсе из другой части песни.
+- На тонкой обработке (oxeye) всё ещё лучше оставить сухой вокал в 6–7 из 8 случаев.
