@@ -132,3 +132,13 @@ def test_optimizer_keeps_confident_plugins_and_unmeasured_params():
     plugins = {plugin.name: plugin.params for plugin in result.chain.plugins}
     assert {"chorus", "compressor"} <= set(plugins)
     assert (plugins["chorus"]["rate_hz"], plugins["chorus"]["depth"], plugins["chorus"]["feedback"]) == (0.1, 0.2, 0.3)
+
+
+def test_optimizer_searches_reverb_send_params_model_does_not_predict():
+    from app.mixing.chain_optimizer import OPTIMIZER_EXTRA_PARAMS, _default_params, _initial_params
+    from app.dataset.dataset_schema import PARAM_LAYOUT
+    extra = set(OPTIMIZER_EXTRA_PARAMS["reverb"])
+    assert not extra & set(PARAM_LAYOUT["reverb"])
+    assert extra <= set(_default_params("reverb"))
+    model_params = {"reverb": {k: 0.5 for k in PARAM_LAYOUT["reverb"]}}
+    assert extra <= set(_initial_params("reverb", {"reverb": 0.99}, model_params))

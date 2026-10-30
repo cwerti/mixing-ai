@@ -57,6 +57,17 @@ METRICS = ("style", "embedding", "combined")
 # Плагины, которые подбирает оптимизатор (EQ считается аналитически, автотюн — отдельно вне цикла)
 SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and name != "pitch_corrector"]
 
+# Параметры, которые подбирает только оптимизатор (модель их не предсказывает), со стартовыми нормализованными
+# значениями. Старт нейтральный (без predelay и фильтров, звучит как прежний Reverb): predelay и срезы
+# (по роликам low cut 400–700 Гц, темный хвост) поиск находит сам, а старт с ними проигрывал полному реверу.
+OPTIMIZER_EXTRA_PARAMS = {
+    "reverb": {"predelay_ms": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0},
+}
+
+
+def _search_params(plugin: str) -> list[str]:
+    return PARAM_LAYOUT[plugin] + list(OPTIMIZER_EXTRA_PARAMS.get(plugin, {}))
+
 
 @dataclass
 class OptimizationResult:
@@ -185,14 +196,15 @@ def _default_params(plugin: str) -> dict[str, float]:
     for param in PARAM_LAYOUT[plugin]:
         direction = PARAM_INTENSITY.get((plugin, param), 0)
         start[param] = 0.25 if direction > 0 else 0.75 if direction < 0 else 0.5
-    return start
+    return {**start, **OPTIMIZER_EXTRA_PARAMS.get(plugin, {})}
 
 
 def _initial_params(plugin: str, model_probs: dict[str, float] | None,
                     model_params: dict[str, dict[str, float]] | None) -> dict[str, float]:
     """Стартовые нормализованные параметры: предсказание модели или мягкая середина диапазона."""
     if _uses_prior(plugin, model_probs, model_params):
-        return {k: float(np.clip(v, 0.0, 1.0)) for k, v in model_params[plugin].items()}
+        return {**OPTIMIZER_EXTRA_PARAMS.get(plugin, {}),
+                **{k: float(np.clip(v, 0.0, 1.0)) for k, v in model_params[plugin].items()}}
     return _default_params(plugin)
 
 
@@ -375,7 +387,7 @@ class ChainOptimizer:
         plugins = [p for p in SEARCHABLE_PLUGINS if p in set(plugins) | kept]
         prior_plugins = {p for p in plugins if _uses_prior(p, model_probs, model_params)}
         current = {p: _initial_params(p, model_probs, model_params) for p in plugins}
-        layout = [(p, k) for p in plugins for k in PARAM_LAYOUT[p] if (p, k) not in UNMEASURED_PARAMS]
+        layout = [(p, k) for p in plugins for k in _search_params(p) if (p, k) not in UNMEASURED_PARAMS]
 
         def unpack(x) -> dict[str, dict[str, float]]:
             result = {p: {k: v for k, v in current[p].items() if (p, k) in UNMEASURED_PARAMS} for p in plugins}

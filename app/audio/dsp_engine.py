@@ -4,7 +4,7 @@ from pedalboard import (
     HighShelfFilter, Chorus, Distortion, HighpassFilter, LowpassFilter,
     NoiseGate, Limiter, Gain
 )
-from app.dataset.dataset_schema import ChainConfig, PluginConfig, DATAGEN_PLUGINS
+from app.dataset.dataset_schema import ChainConfig, PluginConfig, DATAGEN_PLUGINS, REVERB_SEND_PARAMS
 from app.bridge.vst_parameter_mapper import VSTParameterMapper
 
 class DSPEngine:
@@ -433,12 +433,36 @@ class DSPEngine:
                 wet_val = phys.get("wet_level", phys.get("mix", 0.1))
                 if wet_val > 1.0:
                     wet_val = wet_val / 100.0
-                effects.append(Reverb(
-                    room_size=phys.get("room_size", 0.5),
-                    damping=phys.get("damping", 0.5),
-                    wet_level=np.clip(wet_val, 0.0, 1.0),
-                    dry_level=phys.get("dry_level", 0.9)
-                ))
+                wet_val = float(np.clip(wet_val, 0.0, 1.0))
+                if not any(k in phys for k in REVERB_SEND_PARAMS):
+                    effects.append(Reverb(
+                        room_size=phys.get("room_size", 0.5),
+                        damping=phys.get("damping", 0.5),
+                        wet_level=wet_val,
+                        dry_level=phys.get("dry_level", 0.9)
+                    ))
+                else:
+                    # Ревер как send-шина: predelay и фильтры стоят только на мокром сигнале, как в реальных
+                    # миксах (low cut 400–700 Гц, темный хвост), сухой проходит мимо них.
+                    if effects:
+                        try:
+                            y_working = Pedalboard(effects)(y_working, sr)
+                        except Exception as e:
+                            print(f"[-] Ошибка обработки Pedalboard перед ревером: {e}")
+                        effects = []
+                    # Срезы ниже Найквиста: на 22050 Гц фильтр на 20 кГц неустойчив и ломает хвост
+                    nyquist_safe = 0.45 * sr
+                    send = [HighpassFilter(cutoff_frequency_hz=min(phys.get("low_cut_hz", 20.0), nyquist_safe)),
+                            LowpassFilter(cutoff_frequency_hz=min(phys.get("high_cut_hz", 20000.0), nyquist_safe))]
+                    predelay_ms = phys.get("predelay_ms", 0.0)
+                    if predelay_ms > 0.5:
+                        send.insert(0, Delay(delay_seconds=predelay_ms / 1000.0, feedback=0.0, mix=1.0))
+                    send.append(Reverb(room_size=phys.get("room_size", 0.5), damping=phys.get("damping", 0.5),
+                                       wet_level=1.0, dry_level=0.0))
+                    wet = Pedalboard(send)(y_working, sr)
+                    # JUCE Reverb внутри умножает dry_level на 2 (wet уже учтен через wet_level=1.0) — держим тот же
+                    # масштаб, чтобы send-шина без predelay и фильтров звучала как последовательный Reverb
+                    y_working = (2.0 * phys.get("dry_level", 0.9) * y_working + wet_val * wet).astype(np.float32)
                 
             elif plugin.name == "delay":
                 effects.append(Delay(

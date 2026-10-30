@@ -81,3 +81,34 @@ def test_vst_fallback_chain():
     y_out = dsp.apply_chain(y, sr, chain)
     assert len(y_out) == len(y)
 
+
+
+def _low_band_energy(y, sr, cutoff_hz=200.0):
+    spectrum = np.abs(np.fft.rfft(np.asarray(y).mean(axis=0) if np.ndim(y) > 1 else y)) ** 2
+    freqs = np.fft.rfftfreq(np.shape(y)[-1], 1 / sr)
+    return spectrum[freqs < cutoff_hz].sum()
+
+
+def test_reverb_send_low_cut_keeps_lows_out_of_the_tail():
+    dsp = DSPEngine()
+    sr = 44100
+    t = np.arange(sr) / sr
+    y = (0.3 * np.sin(2 * np.pi * 80 * t) * (t < 0.3)).astype(np.float32)  # низкий тон, затем тишина (хвост)
+    params = {"room_size": 0.9, "damping": 0.3, "wet_level": 1.0, "dry_level": 0.0}
+    no_cut = dsp.apply_chain(y, sr, ChainConfig([PluginConfig("reverb", {**params, "low_cut_hz": 0.0})]))
+    cut = dsp.apply_chain(y, sr, ChainConfig([PluginConfig("reverb", {**params, "low_cut_hz": 0.5})]))
+    tail = slice(int(0.4 * sr), None)
+    assert _low_band_energy(cut[..., tail], sr) < 0.1 * _low_band_energy(no_cut[..., tail], sr)
+
+
+def test_reverb_without_send_params_matches_serial_reverb():
+    dsp = DSPEngine()
+    sr = 44100
+    t = np.arange(sr // 2) / sr
+    y = (0.2 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)  # фильтры на краях не трогают середину
+    params = {"room_size": 0.5, "damping": 0.5, "wet_level": 0.5, "dry_level": 0.5}
+    serial = dsp.apply_chain(y, sr, ChainConfig([PluginConfig("reverb", params)]))
+    send = dsp.apply_chain(y, sr, ChainConfig([PluginConfig("reverb", {**params, "predelay_ms": 0.0,
+                                                                        "low_cut_hz": 0.0, "high_cut_hz": 1.0})]))
+    # Без predelay и с фильтрами на краях диапазона send-шина звучит как прежний последовательный Reverb
+    assert np.allclose(serial, send, atol=0.02)

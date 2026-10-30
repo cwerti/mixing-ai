@@ -203,17 +203,20 @@ def test_generator_excludes_test_songs_and_stores_layers(tmp_path):
 def test_remap_param_vector_keeps_physical_values_of_old_checkpoints():
     """Предсказания чекпоинта до v5 пересчитываются в текущие диапазоны с тем же физическим значением."""
     from app.dataset.dataset_schema import (
-        DATAGEN_PLUGINS, LEGACY_PARAM_RANGES, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH, model_param_ranges,
-        remap_param_vector,
+        DATAGEN_PLUGINS, LEGACY_PARAM_RANGES, PARAM_LAYOUT, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH,
+        model_param_ranges, remap_param_vector,
     )
+
+    def index(plugin, param):
+        return PARAM_OFFSETS[plugin] + PARAM_LAYOUT[plugin].index(param)
 
     vec = np.linspace(0.0, 1.0, PARAMETER_VECTOR_LENGTH).astype(np.float32)
     assert np.array_equal(remap_param_vector(vec, model_param_ranges()), vec)
     out = remap_param_vector(vec, None)
     changed = {i for i in range(PARAMETER_VECTOR_LENGTH) if out[i] != vec[i]}
-    expected = {PARAM_OFFSETS["distortion"], PARAM_OFFSETS["chorus"] + 3}
+    expected = {index(plugin, param) for plugin, param in LEGACY_PARAM_RANGES}
     assert changed <= expected
     for (plugin, param), (lo, hi) in LEGACY_PARAM_RANGES.items():
-        idx = PARAM_OFFSETS[plugin] + (0 if plugin == "distortion" else 3)
+        idx = index(plugin, param)
         new_lo, new_hi = DATAGEN_PLUGINS[plugin]["params"][param]
         assert lo + vec[idx] * (hi - lo) == pytest.approx(new_lo + out[idx] * (new_hi - new_lo), abs=1e-5)
