@@ -131,7 +131,7 @@ DATAGEN_PLUGINS = {
             "predelay_ms": (0.0, 80.0),
             "low_cut_hz": (20.0, 1000.0),
             "high_cut_hz": (3000.0, 20000.0),
-            "decay_s": (0.3, 10.0),               # RT60 ревера со свёрткой (decay_reverb); без него — Freeverb
+            "decay_s": (0.3, 20.0),               # RT60 ревера со свёрткой (decay_reverb); без него — Freeverb
         }
     },
     "delay": {

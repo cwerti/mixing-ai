@@ -18,7 +18,8 @@ def decay_reverb(y: np.ndarray, sr: int, decay_s: float, damping: float, seed: i
     Freeverb wet=1 громче нормированной ИХ в ~2 раза), и wet_level у обоих реверов значит одно и то же.
     """
     rng = np.random.default_rng(seed)
-    n = int(min(decay_s * 1.5, 12.0) * sr)
+    # Хвост длиннее сигнала не слышен (свёртка обрезается по его длине), а дальше 1.5·RT60 он ниже -100 дБ
+    n = int(min(decay_s * 1.5, y.shape[-1] / sr + 0.1, 30.0) * sr)
     t = np.arange(n) / sr
     hf_decay = decay_s * (1.0 - 0.85 * float(np.clip(damping, 0.0, 1.0)))
     low_sos = butter(2, 2000.0, "low", fs=sr, output="sos")

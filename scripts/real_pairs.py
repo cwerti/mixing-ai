@@ -343,7 +343,7 @@ if __name__ == "__main__":
     parser.add_argument("--audio-tmp", default=None,
                         help="Папка рендеров (по умолчанию real_pairs_audio, для другой метрики — с ее суффиксом)")
     parser.add_argument("--listen-dir", default="data/processed/real_pairs")
-    parser.add_argument("--metric", choices=["style", "embedding", "combined"], default="style",
+    parser.add_argument("--metric", choices=["style", "embedding", "combined", "embedding_tail"], default="style",
                         help="Целевая функция подбора (ChainOptimizer metric)")
     parser.add_argument("--compare-audio-tmp", default=None,
                         help="Рендеры прошлого прогона для A/B в папке прослушивания (файлы *_style.wav)")

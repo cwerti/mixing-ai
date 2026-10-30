@@ -150,6 +150,38 @@ def width_and_tails(y: np.ndarray, sr: int) -> dict:
             "tail_brightness_db": float(10.0 * np.log10(bright + 1e-12))}
 
 
+# Октавные полосы окраски хвоста (reverb_coloration)
+COLORATION_BANDS_HZ = (125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0)
+
+
+def reverb_coloration(y: np.ndarray, sr: int) -> np.ndarray | None:
+    """
+    Окраска хвоста ревера: спектр пауз минус спектр нот по октавам (дБ). Разность почти не зависит от того,
+    что поют (тембр голоса есть и в нотах, и в хвосте), и показывает АЧХ ревера: темный хвост с плотной
+    серединой у Whiptails против яркого хвоста Freeverb. None — пауз нет или хвост не слышен.
+    """
+    mono = _to_channels(y).mean(axis=0)
+    hop = 1024
+    power = np.abs(librosa.stft(mono, n_fft=2048, hop_length=hop)) ** 2
+    level = 10.0 * np.log10(power.sum(axis=0) + 1e-20)
+    audible = level > level.max() - 60.0
+    if audible.sum() < 8:
+        return None
+    notes = audible & (level > np.percentile(level[audible], 60))
+    tails = audible & (level <= np.percentile(level[audible], 35)) & (level >= np.percentile(level[audible], 5))
+    if not tails.any() or not notes.any():
+        return None
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    out = []
+    for center in COLORATION_BANDS_HZ:
+        band = (freqs >= center / np.sqrt(2)) & (freqs < center * np.sqrt(2))
+        tail_db = 10.0 * np.log10(power[band][:, tails].mean() + 1e-20)
+        note_db = 10.0 * np.log10(power[band][:, notes].mean() + 1e-20)
+        out.append(tail_db - note_db)
+    out = np.array(out)
+    return out - out.mean()  # только форма: общий уровень хвоста меряют другие признаки
+
+
 def pitch_grid_deviation_cents(y: np.ndarray, sr: int, max_seconds: float = 60.0) -> float:
     """
     Медианное отклонение F0 от полутоновой сетки в центах с поправкой на общую расстройку трека.

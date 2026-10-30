@@ -81,3 +81,20 @@ def test_width_split_between_notes_and_tails():
     reverb = Pedalboard([Reverb(room_size=0.8, wet_level=0.3, dry_level=0.8, width=1.0)])
     wet = width_and_tails(reverb(np.vstack([dry, dry]).astype(np.float32), SR), SR)
     assert wet["width_tails_db"] > wet["width_notes_db"] + 3.0
+
+
+def test_reverb_coloration_tells_dark_tail_from_bright():
+    from app.audio.dsp_engine import decay_reverb
+    from app.eval.style_metrics import COLORATION_BANDS_HZ, reverb_coloration
+    from scipy.signal import butter, sosfilt
+    sr = 22050
+    rng = np.random.default_rng(0)
+    bursts = np.zeros(sr * 6, dtype=np.float32)
+    for start in range(0, sr * 5, sr):
+        bursts[start:start + sr // 4] = 0.3 * rng.standard_normal(sr // 4)
+    tail = decay_reverb(bursts, sr, decay_s=2.0, damping=0.0)
+    dark_tail = sosfilt(butter(4, 1500.0, "low", fs=sr, output="sos"), tail).astype(np.float32)
+    bright = reverb_coloration(bursts + 0.5 * tail, sr)
+    dark = reverb_coloration(bursts + 0.5 * dark_tail, sr)
+    high = [i for i, f in enumerate(COLORATION_BANDS_HZ) if f >= 4000.0]
+    assert np.mean(dark[high]) < np.mean(bright[high]) - 6.0

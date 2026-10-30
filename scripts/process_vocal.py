@@ -262,7 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
     parser.add_argument("--model-prior", action="store_true",
                         help="Начинать подбор с цепочки модели (по умолчанию подбор без нее)")
-    parser.add_argument("--metric", choices=["style", "embedding", "combined"], default="embedding",
+    parser.add_argument("--metric", choices=["style", "embedding", "combined", "embedding_tail"], default="embedding",
                         help="Метрика подбора: embedding — обученный кодировщик стиля (точнее на настоящих парах)")
     parser.add_argument("--no-tune", action="store_true",
                         help="Не добавлять автотюн (если в референсе его нет или слышны артефакты)")

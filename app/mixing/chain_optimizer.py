@@ -21,7 +21,7 @@ from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
     CHAIN_ORDER, DATAGEN_PLUGINS, PARAM_LAYOUT, PLUGIN_ON_PROB, RENDER_ORDER, ChainConfig, PluginConfig
 )
-from app.eval.style_metrics import DEFAULT_WEIGHTS, extract_style_features, style_distance
+from app.eval.style_metrics import DEFAULT_WEIGHTS, extract_style_features, reverb_coloration, style_distance
 
 # Уровень, на котором сухой вокал подается в цепочку при генерации датасета (пороги плагинов рассчитаны на него)
 CHAIN_INPUT_LUFS = -23.0
@@ -52,7 +52,11 @@ MODEL_KEEP_PROB = 0.9
 
 # Метрики целевой функции CMA-ES: style — ручная style_distance (по умолчанию), embedding — обученный
 # кодировщик стиля обработки (app/eval/style_embedding.py), combined — их сумма в общих единицах
-METRICS = ("style", "embedding", "combined")
+METRICS = ("style", "embedding", "combined", "embedding_tail")
+
+# embedding_tail: embedding + окраска хвоста ревера (reverb_coloration), средняя разница по октавам в дБ
+# с этим весом. Кодировщик плохо различает АЧХ хвоста (на Whiptails хвост выходил ярче на 2–4 кГц).
+TAIL_COLORATION_WEIGHT = 0.1
 
 # Плагины, которые подбирает оптимизатор (EQ считается аналитически, автотюн — отдельно вне цикла)
 SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and name != "pitch_corrector"]
@@ -60,9 +64,9 @@ SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and n
 # Параметры, которые подбирает только оптимизатор (модель их не предсказывает), со стартовыми нормализованными
 # значениями. Старт нейтральный по фильтрам (без predelay и срезов): их (по роликам low cut 400–700 Гц, темный
 # хвост) поиск находит сам, а старт с ними проигрывал полному реверу. decay_s включает ревер с явным RT60
-# (старт 2 с): Freeverb не давал хвоста длиннее ~3 с, и поиск упирался в room_size = 1 (Whiptails).
+# (старт ~2 с): Freeverb не давал хвоста длиннее ~3 с, и поиск упирался в room_size = 1 (Whiptails).
 OPTIMIZER_EXTRA_PARAMS = {
-    "reverb": {"predelay_ms": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0, "decay_s": 0.18},
+    "reverb": {"predelay_ms": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0, "decay_s": 0.086},
 }
 
 # Параметры модели, которые не звучат, когда заданы параметры оптимизатора (у ревера с RT60 нет room_size)
@@ -274,6 +278,8 @@ class ChainOptimizer:
         target = {"features": ref_features}
         if self.metric != "style":
             target["embedding"] = self.encoder.embed(y_ref, self.sr)
+        if self.metric == "embedding_tail":
+            target["coloration"] = reverb_coloration(y_ref, self.sr)
         return target
 
     def _distance(self, y: np.ndarray, target: dict) -> float:
@@ -284,6 +290,11 @@ class ChainOptimizer:
         emb = self.encoder.distance(self.encoder.embed(y, self.sr), target["embedding"])
         if self.metric == "embedding":
             return EMBEDDING_SCALE * emb
+        if self.metric == "embedding_tail":
+            ref_color, color = target.get("coloration"), reverb_coloration(y, self.sr)
+            if ref_color is None or color is None:
+                return EMBEDDING_SCALE * emb
+            return EMBEDDING_SCALE * emb + TAIL_COLORATION_WEIGHT * float(np.mean(np.abs(color - ref_color)))
         style = style_distance(extract_style_features(y, self.sr, with_pitch=False), target["features"],
                                self.weights)[0]
         return combined_distance(style, emb)
