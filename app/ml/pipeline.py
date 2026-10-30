@@ -11,7 +11,8 @@ sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig, PluginConfig
+    CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig, PluginConfig,
+    remap_param_vector
 )
 from app.mixing.chain_optimizer import eq_plugin
 from app.ml.features import model_inputs
@@ -30,7 +31,8 @@ def model_params_by_plugin(pred_params_vec: np.ndarray) -> dict[str, dict[str, f
 def model_chain(plugins: list[str], eq_bands: list[tuple[float, float]],
                 model_params: dict[str, dict[str, float]]) -> ChainConfig:
     """Цепочка «как предсказала модель» (режим --no-optimize) с защитными лимитами пространственных эффектов."""
-    limits = {("chorus", "depth"): 0.20, ("distortion", "drive_db"): 0.35,
+    # drive_db 0.48 = 9.6 дБ при диапазоне 0–20 дБ (тот же физический предел, что 0.35 при прежнем 4–20 дБ)
+    limits = {("chorus", "depth"): 0.20, ("distortion", "drive_db"): 0.48,
               ("reverb", "wet_level"): 0.40, ("delay", "mix"): 0.45}
     chain = ChainConfig(plugins=[eq_plugin(eq_bands)])
     for plugin in plugins:
@@ -78,6 +80,8 @@ class MixingAIMLPipeline:
         self.model.load_state_dict(model_dict)
         self.model.eval()
         self.param_std = load_param_std(model_path)
+        # Диапазоны параметров, в которых обучен чекпоинт (нет у v4 и старше — тогда LEGACY_PARAM_RANGES)
+        self.param_ranges = checkpoint.get("param_ranges")
         print(f"[+] Модель Mixing-AI v2 загружена на {self.device} (эпоха: {checkpoint.get('epoch', 'N/A')})")
 
     def predict(self, y_src: np.ndarray, y_ref: np.ndarray) -> tuple[list[str], np.ndarray, np.ndarray]:
@@ -95,7 +99,7 @@ class MixingAIMLPipeline:
         with torch.no_grad():
             logits, pred_params = self.model(x_spec_t, None, x_desc_t)
             probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
-            pred_params_vec = pred_params.squeeze(0).cpu().numpy()
+            pred_params_vec = remap_param_vector(pred_params.squeeze(0).cpu().numpy(), self.param_ranges)
 
         active_plugins = [CHAIN_ORDER[i] for i, prob in enumerate(probs) if prob > PLUGIN_ON_PROB]
         if "eq" not in active_plugins:

@@ -19,7 +19,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 # Добавление корня проекта в пути импорта Python
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
-from app.dataset.dataset_schema import CHAIN_ORDER
+from app.dataset.dataset_schema import CHAIN_ORDER, model_param_ranges
 from app.ml.dataset import MixingAIDataset
 from app.ml.model import MixingAIModel, compute_multitask_loss
 
@@ -101,6 +101,12 @@ def train(args):
         pos_weight = compute_class_pos_weights(full_set.samples, device)
     else:
         pos_weight = compute_class_pos_weights(train_set.samples, device)
+    if args.pos_weight == "none":
+        # Частоты эффектов в датасете уже реалистичные (dataset_v4+): балансировка N_neg/N_pos (до 3x) вернула бы
+        # редким chorus/distortion эффективную априорную частоту ~0.4–0.5 и с ней лишние ложные включения
+        pos_weight = None
+    print(f"[*] pos_weight: {args.pos_weight}"
+          + (f" {[round(w, 2) for w in pos_weight.tolist()]}" if pos_weight is not None else ""))
 
     if len(train_set) < 4:
         print("[-] Ошибка: Для обучения модели нужно больше сэмплов в датасете.")
@@ -256,7 +262,11 @@ def train(args):
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_loss": val_loss,
                 "val_macro_f1": val_macro_f1,
-                "val_mae": val_mae
+                "val_mae": val_mae,
+                # Диапазоны, в которых нормализованы параметры (MixingAIMLPipeline пересчитывает их в текущие)
+                "param_ranges": model_param_ranges(),
+                "dataset_dir": str(args.dataset_dir),
+                "pos_weight_mode": args.pos_weight
             }, best_model_path)
             print(f"  [+] Новая лучшая модель сохранена (F1={val_macro_f1:.3f}, MAE={val_mae:.4f}) -> {best_model_path}")
         else:
@@ -280,6 +290,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-len", type=int, default=520, help="Длина спектрограммы по времени")
     parser.add_argument("--show-plot", action="store_true", help="Интерактивный график")
     parser.add_argument("--num-workers", type=int, default=0, help="Воркеры DataLoader")
+    parser.add_argument("--pos-weight", choices=["balanced", "none"], default="balanced",
+                        help="Веса положительных классов BCE: balanced = N_neg/N_pos в [0.4, 3] (v4), none — без весов")
 
     args = parser.parse_args()
     train(args)

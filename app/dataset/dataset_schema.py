@@ -95,7 +95,10 @@ DATAGEN_PLUGINS = {
     "distortion": {
         "fl_name": "Fruity Fast Dist",
         "params": {
-            "drive_db": (4.0, 20.0),              # От теплой сатурации до яркого перегруза
+            # От почти чистой сатурации до яркого перегруза. Нижняя граница 0 дБ (была 4 дБ до модели v5): в стоковых
+            # цепях сатурация — «соус» (Blood Overdrive почти выключен, Soundgoodizer ~10 %), а с минимумом 4 дБ
+            # почти чистой сатурации в обучении не было как класса (docs/research/calibration.md, §4)
+            "drive_db": (0.0, 20.0),
         }
     },
     "chorus": {
@@ -104,7 +107,9 @@ DATAGEN_PLUGINS = {
             "rate_hz": (0.4, 4.0),
             "depth": (0.10, 0.45),
             "feedback": (0.0, 0.40),
-            "mix": (0.12, 0.45),
+            # Нижняя граница 0.05 (была 0.12 до модели v5): хорус «на ширину» подмешивают около 7 %
+            # (docs/research/videos/SUMMARY.md, п. 7 «Что это значит для Mixing-AI»)
+            "mix": (0.05, 0.45),
         }
     },
     "stereo_enhancer": {
@@ -164,6 +169,14 @@ DATAGEN_PLUGINS = {
     }
 }
 
+# Диапазоны, которые поменялись с моделью v5 (до нее drive_db 4–20 дБ, chorus.mix 0.12–0.45). Чекпоинты до v5
+# не хранят диапазонов (ключ "param_ranges" в .pth), их нормализованные предсказания этих параметров
+# пересчитываются в текущие диапазоны (MixingAIMLPipeline), иначе v4 рендерил бы другой физический drive.
+LEGACY_PARAM_RANGES = {
+    ("distortion", "drive_db"): (4.0, 20.0),
+    ("chorus", "mix"): (0.12, 0.45),
+}
+
 # Официальная структура размещения параметров в плоском векторе обучения нейросети (24 параметра).
 # Эквалайзер рассчитывается через SpectralMatcher, а подавитель резонансов — по исходнику.
 PARAM_LAYOUT = {
@@ -187,6 +200,28 @@ for plugin_name in CHAIN_ORDER:
         PARAM_OFFSETS[plugin_name] = current_offset
         current_offset += len(PARAM_LAYOUT[plugin_name])
 PARAMETER_VECTOR_LENGTH = current_offset
+
+
+def model_param_ranges() -> Dict[str, Dict[str, List[float]]]:
+    """Физические диапазоны параметров модели (сохраняются в чекпоинт, чтобы знать, в каких он обучен)."""
+    return {name: {p: list(DATAGEN_PLUGINS[name]["params"][p]) for p in layout} for name, layout in PARAM_LAYOUT.items()}
+
+
+def remap_param_vector(vec, ranges: Dict[str, Dict[str, List[float]]] | None):
+    """
+    Переводит нормализованный вектор параметров модели из диапазонов, в которых она обучена, в текущие
+    DATAGEN_PLUGINS. ranges = None — чекпоинт до v5 (диапазоны LEGACY_PARAM_RANGES для измененных параметров).
+    """
+    out = vec.copy()
+    for name, layout in PARAM_LAYOUT.items():
+        for i, p in enumerate(layout):
+            old = ranges[name][p] if ranges is not None else LEGACY_PARAM_RANGES.get((name, p))
+            new = DATAGEN_PLUGINS[name]["params"][p]
+            if old is None or tuple(old) == tuple(new):
+                continue
+            phys = old[0] + out[PARAM_OFFSETS[name] + i] * (old[1] - old[0])
+            out[PARAM_OFFSETS[name] + i] = min(max((phys - new[0]) / (new[1] - new[0]), 0.0), 1.0)
+    return out
 
 
 @dataclass
@@ -218,6 +253,9 @@ class DatasetSample:
     # Исходные сухие файлы исходника и референса (у датасета v1 совпадают и не записаны)
     src_file: str = ""
     ref_file: str = ""
+    # Слои harmony (даблы/гармонии), добавленные только в рендер референса: в метку модели не входят
+    # (нормализованные параметры, как у DATAGEN_PLUGINS["harmony"]; у датасетов до v4 поля нет)
+    ref_layers: List[Dict[str, float]] = field(default_factory=list)
 
     def to_jsonl_line(self) -> str:
         """Сериализует объект сэмпла в строку JSONL."""

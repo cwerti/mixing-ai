@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from app.dataset.dataset_schema import (
     DatasetSample, ChainConfig, PluginConfig, CHAIN_ORDER, DATAGEN_PLUGINS,
-    PARAM_LAYOUT, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH
+    PARAM_LAYOUT, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH, RENDER_ORDER
 )
 from app.audio.dsp_engine import DSPEngine
 from app.audio.audio_processor import AudioProcessor
@@ -39,6 +39,24 @@ def is_dry_source(path: Path) -> bool:
     try:
         return (not path.name.startswith("._") and path.stem not in PROCESSED_VOCAL_STEMS
                 and path.stat().st_size > 1000)
+    except OSError:
+        return False
+
+
+# Песни реальных тестовых пар (scripts/real_pairs.py, docs/research/real_pairs.md): начиная с dataset_v4 они
+# не попадают ни в train, ни в val целиком, включая сухие дубли, иначе модель заранее слышит голоса теста.
+TEST_SONG_PREFIXES = ("Albert_Kader_Whiptails", "oxeye_Sorry", "Ronnie_Jones_Why_Dont_You_Stay")
+
+
+def is_test_song(path: Path) -> bool:
+    """Файл из песни реальных тестовых пар."""
+    return path.stem.startswith(TEST_SONG_PREFIXES)
+
+
+def _is_audio_file(path: Path) -> bool:
+    """Аудиофайл пула без проверки на обработанность (так файлы отбирались при разбиении dataset_v3)."""
+    try:
+        return not path.name.startswith("._") and path.stat().st_size > 1000
     except OSError:
         return False
 
@@ -185,6 +203,202 @@ def _generate_balanced_random_config(rng: random.Random = random) -> ChainConfig
     return chain
 
 
+# Стили реалистичного генератора (dataset_v4, модель v5): вес стиля и вероятность включения каждого эффекта.
+# Опора — разобранные пресеты (data/raw/presets/harvest/INDEX.md, §3: EQ 5/6, компрессия 5/6, тюн 4/6, реверб
+# 4/6, де-эссер в стоковых цепях почти всегда через Maximus) и рецепты роликов (docs/research/videos/SUMMARY.md,
+# TIPS.md: явный дисторшн только в rage, хорус «на ширину» ~7 %, stereo_enhancer на лиде не ставят).
+# В отличие от _generate_balanced_random_config (~50 % на каждый эффект, модели v3/v4) редкие эффекты здесь
+# действительно редкие, а сатурация и хорус чаще слабые. Маргинальные частоты — realistic_on_rates().
+REALISTIC_STYLES: Dict[str, Tuple[float, Dict[str, float]]] = {
+    # Стоковый «западный» рэп/трэп: Pitcher → EQ → Fruity Compressor → Maximus de-ess → Reeverb 2 → Delay 3
+    "stock_west": (0.20, {
+        "pitch_corrector": 0.65, "compressor": 0.95, "deesser": 0.75, "multiband_compressor": 0.15,
+        "distortion": 0.12, "chorus": 0.05, "stereo_enhancer": 0.08, "reverb": 0.85, "delay": 0.70,
+        "exciter": 0.45}),
+    # Стоковые «русские» пресеты: две ступени компрессии, Blood Overdrive/Soundgoodizer как соус
+    "stock_ru": (0.15, {
+        "pitch_corrector": 0.80, "compressor": 0.95, "deesser": 0.70, "multiband_compressor": 0.35,
+        "distortion": 0.35, "chorus": 0.10, "stereo_enhancer": 0.08, "reverb": 0.85, "delay": 0.65,
+        "exciter": 0.55}),
+    # Rage / новая школа: жесткий тюн, два сатуратора, хорус ~7 %
+    "rage": (0.14, {
+        "pitch_corrector": 0.95, "compressor": 0.90, "deesser": 0.70, "multiband_compressor": 0.35,
+        "distortion": 0.55, "chorus": 0.30, "stereo_enhancer": 0.10, "reverb": 0.85, "delay": 0.70,
+        "exciter": 0.55}),
+    # Hyperpop: OTT, сатурация на всех слоях, модуляция
+    "hyperpop": (0.10, {
+        "pitch_corrector": 0.95, "compressor": 0.85, "deesser": 0.60, "multiband_compressor": 0.65,
+        "distortion": 0.55, "chorus": 0.40, "stereo_enhancer": 0.25, "reverb": 0.80, "delay": 0.70,
+        "exciter": 0.65}),
+    # Pluggnb / R&B: мягкая динамика, длинный темный реверб, хорус на ширину
+    "pluggnb_rnb": (0.12, {
+        "pitch_corrector": 0.85, "compressor": 0.90, "deesser": 0.65, "multiband_compressor": 0.20,
+        "distortion": 0.08, "chorus": 0.35, "stereo_enhancer": 0.20, "reverb": 0.90, "delay": 0.60,
+        "exciter": 0.45}),
+    "pop": (0.13, {
+        "pitch_corrector": 0.55, "compressor": 0.90, "deesser": 0.75, "multiband_compressor": 0.25,
+        "distortion": 0.08, "chorus": 0.15, "stereo_enhancer": 0.20, "reverb": 0.85, "delay": 0.55,
+        "exciter": 0.50}),
+    "indie_rock": (0.10, {
+        "pitch_corrector": 0.20, "compressor": 0.90, "deesser": 0.55, "multiband_compressor": 0.25,
+        "distortion": 0.40, "chorus": 0.25, "stereo_enhancer": 0.15, "reverb": 0.75, "delay": 0.45,
+        "exciter": 0.35}),
+    # Почти без обработки: учит «ничего не включать», когда референс близок к сухому
+    "dry_clean": (0.06, {
+        "pitch_corrector": 0.10, "compressor": 0.60, "deesser": 0.40, "multiband_compressor": 0.0,
+        "distortion": 0.0, "chorus": 0.0, "stereo_enhancer": 0.0, "reverb": 0.20, "delay": 0.05,
+        "exciter": 0.10}),
+}
+
+# Стили, где тюн жесткий (Retune 0 / Pitcher Fast, 8 источников в SUMMARY.md)
+_HARD_TUNE_STYLES = ("rage", "hyperpop", "pluggnb_rnb", "stock_ru")
+# Доля сэмплов, где параметр берется равномерно по всему диапазону, а не из реалистичного prior: регрессия
+# должна видеть весь диапазон, иначе на необычных референсах она стягивается к prior.
+_PARAM_COVERAGE_SHARE = 0.3
+
+
+def realistic_on_rates() -> Dict[str, float]:
+    """Ожидаемая частота включения каждого эффекта по смеси REALISTIC_STYLES (EQ включен всегда)."""
+    total = sum(w for w, _ in REALISTIC_STYLES.values())
+    rates = {"eq": 1.0}
+    for name in CHAIN_ORDER[1:]:
+        rates[name] = sum(w * probs[name] for w, probs in REALISTIC_STYLES.values()) / total
+    return rates
+
+
+def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, float]:
+    """Нормализованные параметры эффекта для реалистичного генератора (prior по рецептам + доля равномерных)."""
+    u = rng.uniform
+    covered = rng.random() < _PARAM_COVERAGE_SHARE
+    if name == "eq":
+        # Как в сбалансированном генераторе: EQ на инференсе считается аналитически (SpectralMatcher)
+        return {p: float(u(0.42, 0.58) if "gain" in p else u(0.25, 0.75)) for p in DATAGEN_PLUGINS["eq"]["params"]}
+    if name == "pitch_corrector":
+        # Retune 0 / Pitcher Fast в новой школе, Medium (0.5–0.7 физ.) в «натуральном»; ниже ~0.4 физ. не бывает
+        if covered:
+            return {"speed": u(0.0, 1.0)}
+        hard = style in _HARD_TUNE_STYLES and rng.random() < 0.75
+        return {"speed": u(0.8, 1.0) if hard else u(0.2, 0.65)}
+    if name == "compressor":
+        thresh = u(0.05, 0.80)
+        intensity = 1.0 - thresh
+        if covered:
+            ratio = np.clip(0.20 + 0.75 * intensity + u(-0.12, 0.12), 0.0, 1.0)
+            attack = np.clip(0.80 - 0.65 * intensity + u(-0.12, 0.12), 0.0, 1.0)
+            release = np.clip(0.75 - 0.55 * intensity + u(-0.12, 0.12), 0.0, 1.0)
+        else:
+            # Ratio 2.5–5 (prior 3.5), attack 10–30 мс, release 170–330 мс (TIPS.md, п. 4)
+            ratio, attack, release = u(0.08, 0.40) + 0.1 * intensity, u(0.11, 0.37), u(0.26, 0.53)
+        return {"threshold_db": thresh, "ratio": float(ratio), "attack_ms": float(attack),
+                "release_ms": float(release)}
+    if name == "deesser":
+        thresh = u(0.05, 0.80)
+        return {"threshold_db": thresh,
+                "ratio": float(np.clip(0.20 + 0.75 * (1.0 - thresh) + u(-0.12, 0.12), 0.0, 1.0))}
+    if name == "multiband_compressor":
+        return {"depth": u(0.5, 1.0) if style == "hyperpop" and not covered else u(0.0, 1.0)}
+    if name == "distortion":
+        # Слабая сатурация (0–4 дБ, «соус» Blood Overdrive/Soundgoodizer) — самый частый случай; жесткий
+        # перегруз в основном в rage/hyperpop/rock
+        heavy_style = style in ("rage", "hyperpop", "indie_rock")
+        tier = rng.choices(("weak", "medium", "strong"), weights=(0.30, 0.40, 0.30) if heavy_style
+                           else (0.55, 0.35, 0.10))[0]
+        if covered:
+            tier = "any"
+        drive = {"weak": (0.0, 0.2), "medium": (0.2, 0.55), "strong": (0.55, 1.0), "any": (0.0, 1.0)}[tier]
+        return {"drive_db": u(*drive)}
+    if name == "chorus":
+        if not covered and rng.random() < 0.5:
+            # Легкий хорус «на ширину»: mix 5–11 %, малая глубина
+            return {"rate_hz": u(0.05, 0.6), "depth": u(0.0, 0.35), "feedback": u(0.0, 0.25), "mix": u(0.0, 0.15)}
+        mix = u(0.15, 0.95)
+        return {"rate_hz": u(0.08, 0.92), "depth": float(np.clip(0.20 + 0.65 * mix + u(-0.12, 0.12), 0.0, 1.0)),
+                "feedback": float(np.clip(0.15 + 0.65 * mix + u(-0.12, 0.12), 0.0, 1.0)), "mix": mix}
+    if name == "stereo_enhancer":
+        return {"delay_ms": u(0.05, 0.95), "width": u(0.05, 0.95)}
+    if name == "reverb":
+        wet = u(0.08, 0.95)
+        if covered:
+            room, damp = float(np.clip(0.20 + 0.70 * wet + u(-0.18, 0.18), 0.0, 1.0)), u(0.08, 0.92)
+        else:
+            # Длинный (2.3–4 с) и темный (срез верха 6–8 кГц) реверб: большая комната, высокое затухание
+            room, damp = u(0.5, 0.95), u(0.55, 0.95)
+        return {"room_size": room, "damping": damp, "wet_level": wet,
+                "dry_level": float(np.clip(0.95 - 0.65 * wet + u(-0.08, 0.08), 0.0, 1.0))}
+    if name == "delay":
+        lo, hi = DATAGEN_PLUGINS["delay"]["params"]["delay_seconds"]
+        if covered:
+            delay = u(0.05, 0.95)
+        else:
+            # Синхронизация с темпом: 1/4 (4 источника), 1/8, реже 1/16 при 120–165 BPM
+            beats = rng.choices((1.0, 0.5, 0.25), weights=(0.45, 0.40, 0.15))[0]
+            delay = DSPEngine.normalize_value(60.0 / u(120.0, 165.0) * beats, lo, hi)
+        mix = u(0.10, 0.95)
+        return {"delay_seconds": float(delay), "mix": mix,
+                "feedback": float(np.clip(0.18 + 0.70 * mix + u(-0.12, 0.12), 0.0, 1.0))}
+    if name == "exciter":
+        return {"mix": u(0.05, 0.95), "cutoff_hz": u(0.05, 0.95)}
+    raise ValueError(f"Нет реалистичного prior для плагина {name}")
+
+
+def _generate_realistic_config(rng: random.Random = random) -> ChainConfig:
+    """
+    Цепочка с реалистичными частотами включения и параметрами (dataset_v4, модель v5): см. REALISTIC_STYLES.
+    Размерности выхода модели те же (MODEL_PLUGINS / PARAM_LAYOUT), меняется только распределение.
+    """
+    styles = list(REALISTIC_STYLES)
+    style = rng.choices(styles, weights=[REALISTIC_STYLES[s][0] for s in styles], k=1)[0]
+    probs = REALISTIC_STYLES[style][1]
+    active = ["eq"] + [name for name in CHAIN_ORDER[1:] if rng.random() < probs[name]]
+    return ChainConfig(plugins=[PluginConfig(name=name, params={k: float(v) for k, v in
+                                                                 _realistic_params(name, style, rng).items()})
+                                for name in CHAIN_ORDER if name in active])
+
+
+def _harmony(semitones: float, level_db: float, delay_ms: float, detune_cents: float,
+             width: float) -> PluginConfig:
+    """Слой harmony с физическими параметрами (форманты сохранены, фейдер слоя открыт)."""
+    ranges = DATAGEN_PLUGINS["harmony"]["params"]
+    phys = {"semitones": semitones, "formant_shift": 0.0, "level_db": level_db, "delay_ms": delay_ms,
+            "detune_cents": detune_cents, "width": width, "mix": 1.0}
+    return PluginConfig("harmony", {k: DSPEngine.normalize_value(v, *ranges[k]) for k, v in phys.items()})
+
+
+def sample_reference_layers(rng: random.Random) -> List[PluginConfig]:
+    """
+    Даблы, бэки и гармонии в референсе (аугментация только на стороне референса, модель их не предсказывает).
+    Реальный референс — вокал из микса, где слои дают модуляцию и ширину, похожие на хорус; без них модель
+    путала такую ширину с chorus (docs/research/calibration.md, §4). Уровни и панорама — SUMMARY.md, §8:
+    стерео-даблы ±100 %, около −5 дБ (до −15); моно-дабл под лидом −10…−15 дБ; гармонии ±80–90 %, −7…−8 дБ.
+    """
+    u = rng.uniform
+    kinds = ["stereo_double", "mono_double", "harmony"]
+    first = rng.choices(kinds, weights=(0.50, 0.20, 0.30))[0]
+    chosen = [first]
+    if rng.random() < 0.3:
+        chosen.append(rng.choice([k for k in kinds if k != first]))
+    layers = []
+    for kind in chosen:
+        if kind == "stereo_double":
+            layers.append(_harmony(0.0, u(-12.0, -3.0), u(8.0, 30.0), u(5.0, 15.0), u(0.85, 1.0)))
+        elif kind == "mono_double":
+            layers.append(_harmony(0.0, u(-15.0, -10.0), u(5.0, 25.0), u(3.0, 12.0), 0.0))
+        else:
+            interval = rng.choice((3.0, 4.0, 5.0, 7.0, -5.0, 12.0, -12.0))
+            layers.append(_harmony(interval, u(-10.0, -6.0), u(0.0, 15.0), u(0.0, 8.0), u(0.75, 0.9)))
+    return layers
+
+
+def with_reference_layers(chain: ChainConfig, layers: List[PluginConfig]) -> ChainConfig:
+    """Цепочка рендера референса: слои harmony встают на свое место в RENDER_ORDER (перед реверб/дилей)."""
+    plugins = list(chain.plugins) + list(layers)
+    order = {name: i for i, name in enumerate(RENDER_ORDER)}
+    return ChainConfig(plugins=sorted(plugins, key=lambda p: order.get(p.name, len(order))))
+
+
+CHAIN_PRIORS = {"realistic": _generate_realistic_config, "balanced": _generate_balanced_random_config}
+
+
 class DatasetGenerator:
     """
     Генератор синтетического датасета v2 для обучения Mixing-AI.
@@ -200,8 +414,8 @@ class DatasetGenerator:
         self.dsp = DSPEngine()
         self.audio_processor = AudioProcessor(sr=sr)
 
-    def _generate_random_config(self) -> ChainConfig:
-        return _generate_balanced_random_config()
+    def _generate_random_config(self, prior: str = "realistic") -> ChainConfig:
+        return CHAIN_PRIORS[prior]()
 
     def _flatten_params(self, chain_config: ChainConfig) -> List[float]:
         vec = [0.0] * PARAMETER_VECTOR_LENGTH
@@ -272,7 +486,8 @@ class DatasetGenerator:
         return train_files, val_files
 
     def generate(self, max_samples: int = 1000, sc_ratio: float = 0.0, save_all_wav: bool = False,
-                 cross_ratio: float = 1.0, seed: int = 0) -> List[DatasetSample]:
+                 cross_ratio: float = 1.0, seed: int = 0, prior: str = "realistic", harmony_ratio: float = 0.35,
+                 exclude_test_songs: bool = True) -> List[DatasetSample]:
         """
         Запускает параллельную генерацию датасета на всех ядрах CPU (без использования SoundCloud).
 
@@ -280,7 +495,13 @@ class DatasetGenerator:
             cross_ratio: Доля пар, где референс рендерится из другого голоса другой песни (реальная задача);
                 остальные пары — референс из того же фрагмента, что и исходник (поведение датасета v1).
             seed: Seed выбора файлов, пар и цепочек.
+            prior: Распределение цепочек: "realistic" (dataset_v4, частоты как в реальных цепях) или
+                "balanced" (dataset_v3, ~50 % на эффект).
+            harmony_ratio: Доля референсов с даблами/гармониями (рендер-плагин harmony, без метки).
+            exclude_test_songs: Не брать песни реальных тестовых пар (TEST_SONG_PREFIXES) ни в train, ни в val.
         """
+        if prior not in CHAIN_PRIORS:
+            raise ValueError(f"Неизвестный prior цепочек: {prior}")
         task_rng = random.Random(seed)
         dry_out_dir = self.output_dir / "audio" / "dry"
         wet_out_dir = self.output_dir / "audio" / "wet"
@@ -293,7 +514,12 @@ class DatasetGenerator:
         cambridge_dir = self.dry_dir / "cambridge"
         vctk_dir = self.dry_dir / "vctk"
 
-        is_valid_audio = is_dry_source
+        # Разбиение по песням считается на всех аудиофайлах пула, как у dataset_v3, а обработанные стемы и
+        # песни теста убираются уже после него: так val-песни v4 и v5 совпадают, и модели сравнимы на одном val.
+        is_valid_audio = _is_audio_file
+
+        def usable(f: Path) -> bool:
+            return is_dry_source(f) and not (exclude_test_songs and is_test_song(f))
 
         cambridge_files: List[Path] = []
         vctk_files: List[Path] = []
@@ -325,8 +551,16 @@ class DatasetGenerator:
         source_splits: Dict[str, Tuple[List[Path], List[Path]]] = {}
         for s_name, s_list in all_sources.items():
             tr_f, val_f = self._split_files_by_group(s_list, val_ratio=0.15)
+            tr_f, val_f = [f for f in tr_f if usable(f)], [f for f in val_f if usable(f)]
+            if not tr_f and not val_f:
+                continue
+            tr_f, val_f = tr_f or val_f, val_f or tr_f[:1]
             source_splits[s_name] = (tr_f, val_f)
-            print(f"    - {s_name}: всего {len(s_list)} файлов (Train: {len(tr_f)} | Val: {len(val_f)})")
+            print(f"    - {s_name}: всего {len(s_list)} файлов, после исключения обработанных и тестовых песен "
+                  f"Train: {len(tr_f)} | Val: {len(val_f)}")
+        if not source_splits:
+            print(f"[-] После исключения обработанных стемов и тестовых песен сухих файлов не осталось: {self.dry_dir}")
+            return []
 
         tasks = []
         source_keys = list(source_splits.keys())
@@ -343,7 +577,7 @@ class DatasetGenerator:
             # Сохраняем WAV для первых 50 сэмплов (или для всех при малом тесте max_samples <= 50)
             write_wav = save_all_wav or (max_samples <= 50) or (i < 30)
             tasks.append((i, src_file, ref_file, src_type, split_name, self.sr, str(self.output_dir), write_wav,
-                          seed))
+                          seed, prior, harmony_ratio))
 
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
@@ -368,6 +602,10 @@ class DatasetGenerator:
             "val_samples": sum(1 for s in samples if s.split == "val"),
             "sr": self.sr,
             "cross_ratio": cross_ratio,
+            "prior": prior,
+            "harmony_ratio": harmony_ratio,
+            "exclude_test_songs": list(TEST_SONG_PREFIXES) if exclude_test_songs else [],
+            "with_reference_layers": sum(1 for s in samples if s.ref_layers),
             "chain_order": CHAIN_ORDER,
             "param_layout": PARAM_LAYOUT
         }
@@ -404,7 +642,7 @@ def _generate_sample_worker(task) -> str | None:
     Исходник — фрагмент src_file, референс — цепочка, примененная к фрагменту ref_file (другой голос при
     cross-парах). Оба сигнала стерео и подготовлены так же, как на инференсе (app/ml/features.py).
     """
-    idx, src_file, ref_file, source_name, split_name, sr, output_dir_str, write_wav, seed = task
+    idx, src_file, ref_file, source_name, split_name, sr, output_dir_str, write_wav, seed, prior, harmony_ratio = task
 
     import warnings
     warnings.filterwarnings("ignore")
@@ -424,8 +662,11 @@ def _generate_sample_worker(task) -> str | None:
         y_dry = _load_chunk(src_file, sr, duration, rng)
         y_ref_dry = y_dry if ref_file == src_file else _load_chunk(ref_file, sr, duration, rng)
 
-        # 2. Генерация сбалансированной цепочки плагинов и честных параметров
-        chain = _generate_balanced_random_config(rng)
+        # 2. Генерация цепочки плагинов (метка модели) и, с вероятностью harmony_ratio, слоев даблов/гармоний,
+        # которые есть только в рендере референса и в метку не входят
+        chain = CHAIN_PRIORS[prior](rng)
+        layers = sample_reference_layers(rng) if rng.random() < harmony_ratio else []
+        render_chain = with_reference_layers(chain, layers) if layers else chain
 
         # 3. Оффлайн-рендеринг в стерео (реверб дает ширину) БЕЗ скрытого обрезания параметров
         rand_key = rng.randint(0, 11)
@@ -433,7 +674,7 @@ def _generate_sample_worker(task) -> str | None:
         y_wet = dsp.apply_chain(
             y_ref_dry,
             sr,
-            chain,
+            render_chain,
             target_key_index=rand_key,
             target_scale=rand_scale,
             apply_safety_clamps=False
@@ -501,7 +742,8 @@ def _generate_sample_worker(task) -> str | None:
             params_vector=flat_vector,
             split=split_name,
             src_file=str(src_file),
-            ref_file=str(ref_file)
+            ref_file=str(ref_file),
+            ref_layers=[layer.params for layer in layers]
         )
         return sample.to_jsonl_line()
     except Exception as e:

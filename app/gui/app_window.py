@@ -21,7 +21,7 @@ from app.audio.vocal_enhancer import VocalEnhancer
 from app.ml.model import MixingAIModel
 from app.presets.preset_generator import PresetGenerator
 from app.presets.full_preset_generator import FullPresetGenerator
-from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, PLUGIN_ON_PROB
+from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, PLUGIN_ON_PROB, remap_param_vector
 
 class EQVisualizer(QFrame):
     """
@@ -389,7 +389,8 @@ class AnalysisThread(QThread):
                 active_plugins = (probs > PLUGIN_ON_PROB).astype(int)
                 
                 # Регрессия параметров
-                params = pred_params.squeeze(0).cpu().numpy()
+                # Чекпоинты до v5 обучены в прежних диапазонах drive/chorus.mix (LEGACY_PARAM_RANGES)
+                params = remap_param_vector(pred_params.squeeze(0).cpu().numpy(), checkpoint.get("param_ranges"))
                 
             self.progress.emit("Сведение эквалайзера (Spectral Matcher)...")
             # Расчет кривой компенсации эквализации

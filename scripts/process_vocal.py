@@ -24,7 +24,7 @@ from app.audio.audio_processor import AudioProcessor, SpectralMatcher
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
 from app.dataset.dataset_schema import (
-    CHAIN_ORDER, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig
+    CHAIN_ORDER, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig, remap_param_vector
 )
 from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, to_stereo
@@ -150,7 +150,8 @@ def process_vocal(args):
         x_desc_tensor = x_desc_tensor.to(device)
         logits, pred_params = model(x_spec_tensor, None, x_desc_tensor)
         probs = torch.sigmoid(logits).squeeze(0).cpu().numpy()
-        pred_params_vec = pred_params.squeeze(0).cpu().numpy()
+        # Чекпоинты до v5 обучены в прежних диапазонах drive/chorus.mix (LEGACY_PARAM_RANGES)
+        pred_params_vec = remap_param_vector(pred_params.squeeze(0).cpu().numpy(), checkpoint.get("param_ranges"))
 
     model_probs = {name: float(probs[i]) for i, name in enumerate(CHAIN_ORDER)}
     model_params = model_params_by_plugin(pred_params_vec)

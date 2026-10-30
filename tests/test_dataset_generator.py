@@ -137,3 +137,83 @@ def test_generator_never_uses_processed_vocals(tmp_path):
     assert lines
     used = {Path(json.loads(line)[key]).name for line in lines for key in ("src_file", "ref_file")}
     assert "Albert_Kader_Whiptails_12_Vox_Wet.wav" not in used
+
+
+def test_realistic_prior_rates_follow_real_chains():
+    """Реалистичный prior: динамика, тюн и реверб частые, chorus/distortion/stereo_enhancer редкие."""
+    import random
+    from app.dataset.dataset_generator import _generate_realistic_config, realistic_on_rates
+
+    rates = realistic_on_rates()
+    assert rates["eq"] == 1.0
+    assert rates["compressor"] > 0.85 and rates["reverb"] > 0.75 and rates["pitch_corrector"] > 0.6
+    assert rates["chorus"] < 0.25 and rates["distortion"] < 0.3 and rates["stereo_enhancer"] < 0.2
+
+    rng = random.Random(0)
+    chains = [_generate_realistic_config(rng) for _ in range(3000)]
+    chorus = [p.params for c in chains for p in c.plugins if p.name == "chorus"]
+    drive = [p.params["drive_db"] for c in chains for p in c.plugins if p.name == "distortion"]
+    assert abs(len(chorus) / len(chains) - rates["chorus"]) < 0.03
+    # Слабые настройки: почти чистая сатурация (< 4 дБ) и легкий хорус (mix < 11 %) — заметная доля
+    assert np.mean(np.array(drive) < 0.2) > 0.3
+    assert np.mean([c["mix"] < 0.15 for c in chorus]) > 0.3
+    for chain in chains[:200]:
+        for plugin in chain.plugins:
+            assert all(0.0 <= v <= 1.0 for v in plugin.params.values()), plugin
+
+
+def test_reference_layers_render_only():
+    """Слои harmony встают перед реверб/дилей в рендере референса и не попадают в метку модели."""
+    import random
+    from app.dataset.dataset_generator import _generate_realistic_config, sample_reference_layers, with_reference_layers
+    from app.dataset.dataset_schema import MODEL_PLUGINS, RENDER_ORDER
+
+    rng = random.Random(3)
+    for _ in range(50):
+        chain = _generate_realistic_config(rng)
+        layers = sample_reference_layers(rng)
+        assert 1 <= len(layers) <= 2 and all(layer.name == "harmony" for layer in layers)
+        names = [p.name for p in with_reference_layers(chain, layers).plugins]
+        assert [n for n in names if n != "harmony"] == [p.name for p in chain.plugins]
+        assert names == sorted(names, key=RENDER_ORDER.index)
+        assert "harmony" not in MODEL_PLUGINS
+
+
+def test_generator_excludes_test_songs_and_stores_layers(tmp_path):
+    """Песни реальных тестовых пар не попадают ни в train, ни в val; слои референса пишутся отдельно от метки."""
+    sr = 44100
+    t = np.arange(int(0.5 * sr)) / sr
+    cambridge = tmp_path / "dry" / "cambridge"
+    cambridge.mkdir(parents=True)
+    for i, name in enumerate(["oxeye_Sorry_13_LeadVox_NoPitchProcessing", "Ronnie_Jones_Why_Dont_You_Stay_24_LeadVoxRaw",
+                              "Song_A_01_LeadVox", "Song_B_01_LeadVox", "Song_C_01_LeadVox"]):
+        sf.write(cambridge / f"{name}.wav", 0.2 * np.sin(2 * np.pi * (200 + 40 * i) * t), sr)
+
+    generator = DatasetGenerator(dry_dir=tmp_path / "dry", output_dir=tmp_path / "out", sr=sr)
+    samples = generator.generate(max_samples=8, harmony_ratio=1.0)
+
+    assert len(samples) == 8
+    used = {Path(getattr(s, key)).stem for s in samples for key in ("src_file", "ref_file")}
+    assert not any(stem.startswith(("oxeye_Sorry", "Ronnie_Jones")) for stem in used)
+    assert all(s.ref_layers and "harmony" not in s.chain and "harmony" not in s.params for s in samples)
+    stats = json.loads((tmp_path / "out" / "stats.json").read_text(encoding="utf-8"))
+    assert stats["prior"] == "realistic" and stats["with_reference_layers"] == 8
+
+
+def test_remap_param_vector_keeps_physical_values_of_old_checkpoints():
+    """Предсказания чекпоинта до v5 пересчитываются в текущие диапазоны с тем же физическим значением."""
+    from app.dataset.dataset_schema import (
+        DATAGEN_PLUGINS, LEGACY_PARAM_RANGES, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH, model_param_ranges,
+        remap_param_vector,
+    )
+
+    vec = np.linspace(0.0, 1.0, PARAMETER_VECTOR_LENGTH).astype(np.float32)
+    assert np.array_equal(remap_param_vector(vec, model_param_ranges()), vec)
+    out = remap_param_vector(vec, None)
+    changed = {i for i in range(PARAMETER_VECTOR_LENGTH) if out[i] != vec[i]}
+    expected = {PARAM_OFFSETS["distortion"], PARAM_OFFSETS["chorus"] + 3}
+    assert changed <= expected
+    for (plugin, param), (lo, hi) in LEGACY_PARAM_RANGES.items():
+        idx = PARAM_OFFSETS[plugin] + (0 if plugin == "distortion" else 3)
+        new_lo, new_hi = DATAGEN_PLUGINS[plugin]["params"][param]
+        assert lo + vec[idx] * (hi - lo) == pytest.approx(new_lo + out[idx] * (new_hi - new_lo), abs=1e-5)

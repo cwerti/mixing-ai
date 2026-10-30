@@ -25,6 +25,12 @@ def main():
                         help="Доля пар, где референс — другой голос другой песни (1.0 = как в реальной задаче)")
     parser.add_argument("--seed", type=int, default=0, help="Seed выбора файлов, пар и цепочек")
     parser.add_argument("--save-all-wav", action="store_true", help="Сохранять WAV для всех сэмплов (по умолчанию только первые 30)")
+    parser.add_argument("--prior", choices=["realistic", "balanced"], default="realistic",
+                        help="Распределение цепочек: realistic (dataset_v4+) или balanced (как dataset_v3)")
+    parser.add_argument("--harmony-ratio", type=float, default=0.35,
+                        help="Доля референсов с даблами/гармониями (только рендер, без метки)")
+    parser.add_argument("--include-test-songs", action="store_true",
+                        help="Не исключать песни реальных тестовых пар (поведение до dataset_v4)")
 
     args = parser.parse_args()
 
@@ -66,7 +72,8 @@ def main():
     # 3. Запуск генерации итогового датасета (без использования SoundCloud)
     generator = DatasetGenerator(dry_dir=raw_dry_dir, output_dir=output_dir, sr=44100)
     generator.generate(max_samples=args.max_samples, save_all_wav=args.save_all_wav,
-                       cross_ratio=args.cross_ratio, seed=args.seed)
+                       cross_ratio=args.cross_ratio, seed=args.seed, prior=args.prior,
+                       harmony_ratio=args.harmony_ratio, exclude_test_songs=not args.include_test_songs)
 
 
 if __name__ == "__main__":

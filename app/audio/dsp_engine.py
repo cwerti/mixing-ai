@@ -65,12 +65,14 @@ class DSPEngine:
             if "depth" in clamped_params:
                 clamped_params["depth"] = min(clamped_params["depth"], 0.15)
             if "mix" in clamped_params:
-                clamped_params["mix"] = min(clamped_params["mix"], 0.20)
+                # 0.34 при диапазоне mix 0.05–0.45 — те же 0.186 физически, что 0.20 при прежнем 0.12–0.45
+                clamped_params["mix"] = min(clamped_params["mix"], 0.34)
             if "rate_hz" in clamped_params:
                 clamped_params["rate_hz"] = min(clamped_params["rate_hz"], 0.25)
         elif name == "distortion":
             if "drive_db" in clamped_params:
-                clamped_params["drive_db"] = min(clamped_params["drive_db"], 0.40)
+                # 0.52 при диапазоне 0–20 дБ — те же 10.4 дБ, что 0.40 при прежнем 4–20 дБ
+                clamped_params["drive_db"] = min(clamped_params["drive_db"], 0.52)
         elif name == "reverb":
             if "wet_level" in clamped_params:
                 clamped_params["wet_level"] = min(clamped_params["wet_level"], 0.22)
