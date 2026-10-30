@@ -14,7 +14,8 @@ def decay_reverb(y: np.ndarray, sr: int, decay_s: float, damping: float, seed: i
     Мокрый сигнал ревера с явным временем затухания RT60 (Freeverb из pedalboard длиннее ~3 с не тянет,
     а у реальных миксов хвост бывает 4–8 с). Импульсная характеристика — экспоненциально затухающий шум:
     верх (выше ~2 кГц) гаснет быстрее на долю damping, каналы декоррелированы (разный шум) для ширины.
-    Энергия ИХ нормирована к 1, громкость задает wet_level снаружи.
+    Энергия ИХ нормирована к 2² — так хвост на том же wet_level звучит примерно как у Freeverb (замер на шуме:
+    Freeverb wet=1 громче нормированной ИХ в ~2 раза), и wet_level у обоих реверов значит одно и то же.
     """
     rng = np.random.default_rng(seed)
     n = int(min(decay_s * 1.5, 12.0) * sr)
@@ -28,7 +29,7 @@ def decay_reverb(y: np.ndarray, sr: int, decay_s: float, damping: float, seed: i
         noise = rng.standard_normal(n)
         ir = (sosfilt(low_sos, noise) * np.exp(-6.91 * t / decay_s)
               + sosfilt(high_sos, noise) * np.exp(-6.91 * t / max(hf_decay, 0.05)))
-        irs.append(ir / np.sqrt(np.sum(ir ** 2)))
+        irs.append(2.0 * ir / np.sqrt(np.sum(ir ** 2)))
     if y.ndim == 1:
         return fftconvolve(y, irs[0])[:len(y)].astype(np.float32)
     mono = y.mean(axis=0)
