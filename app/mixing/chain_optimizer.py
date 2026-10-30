@@ -58,15 +58,20 @@ METRICS = ("style", "embedding", "combined")
 SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and name != "pitch_corrector"]
 
 # Параметры, которые подбирает только оптимизатор (модель их не предсказывает), со стартовыми нормализованными
-# значениями. Старт нейтральный (без predelay и фильтров, звучит как прежний Reverb): predelay и срезы
-# (по роликам low cut 400–700 Гц, темный хвост) поиск находит сам, а старт с ними проигрывал полному реверу.
+# значениями. Старт нейтральный по фильтрам (без predelay и срезов): их (по роликам low cut 400–700 Гц, темный
+# хвост) поиск находит сам, а старт с ними проигрывал полному реверу. decay_s включает ревер с явным RT60
+# (старт 2 с): Freeverb не давал хвоста длиннее ~3 с, и поиск упирался в room_size = 1 (Whiptails).
 OPTIMIZER_EXTRA_PARAMS = {
-    "reverb": {"predelay_ms": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0},
+    "reverb": {"predelay_ms": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0, "decay_s": 0.18},
 }
+
+# Параметры модели, которые не звучат, когда заданы параметры оптимизатора (у ревера с RT60 нет room_size)
+SUPERSEDED_PARAMS = {("reverb", "room_size")}
 
 
 def _search_params(plugin: str) -> list[str]:
-    return PARAM_LAYOUT[plugin] + list(OPTIMIZER_EXTRA_PARAMS.get(plugin, {}))
+    own = [k for k in PARAM_LAYOUT[plugin] if (plugin, k) not in SUPERSEDED_PARAMS]
+    return own + list(OPTIMIZER_EXTRA_PARAMS.get(plugin, {}))
 
 
 @dataclass

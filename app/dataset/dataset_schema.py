@@ -131,6 +131,7 @@ DATAGEN_PLUGINS = {
             "predelay_ms": (0.0, 80.0),
             "low_cut_hz": (20.0, 1000.0),
             "high_cut_hz": (3000.0, 20000.0),
+            "decay_s": (0.3, 10.0),               # RT60 ревера со свёрткой (decay_reverb); без него — Freeverb
         }
     },
     "delay": {
@@ -186,7 +187,7 @@ LEGACY_PARAM_RANGES = {
 
 # Параметры ревера как send-шины: если хоть один задан, DSPEngine рендерит ревер параллельно с predelay и
 # фильтрами на мокром сигнале; без них — прежний последовательный Reverb (цепочки модели звучат как раньше).
-REVERB_SEND_PARAMS = ("predelay_ms", "low_cut_hz", "high_cut_hz")
+REVERB_SEND_PARAMS = ("predelay_ms", "low_cut_hz", "high_cut_hz", "decay_s")
 
 # Официальная структура размещения параметров в плоском векторе обучения нейросети (24 параметра).
 # Эквалайзер рассчитывается через SpectralMatcher, а подавитель резонансов — по исходнику.

@@ -112,3 +112,16 @@ def test_reverb_without_send_params_matches_serial_reverb():
                                                                         "low_cut_hz": 0.0, "high_cut_hz": 1.0})]))
     # Без predelay и с фильтрами на краях диапазона send-шина звучит как прежний последовательный Reverb
     assert np.allclose(serial, send, atol=0.02)
+
+
+def test_decay_reverb_tail_follows_rt60():
+    from app.audio.dsp_engine import decay_reverb
+    sr = 16000
+    impulse = np.zeros(sr * 8, dtype=np.float32)
+    impulse[0] = 1.0
+    for rt60 in (1.0, 4.0):
+        tail = decay_reverb(impulse, sr, decay_s=rt60, damping=0.0)
+        energy = np.convolve(tail ** 2, np.ones(sr // 20) / (sr // 20), "same")
+        level_db = 10 * np.log10(energy[[int(0.1 * sr), int(0.1 * sr + rt60 / 2 * sr)]] + 1e-20)
+        # За RT60/2 хвост падает на ~30 дБ
+        assert 25.0 < level_db[0] - level_db[1] < 35.0

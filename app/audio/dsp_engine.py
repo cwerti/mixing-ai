@@ -6,6 +6,33 @@ from pedalboard import (
 )
 from app.dataset.dataset_schema import ChainConfig, PluginConfig, DATAGEN_PLUGINS, REVERB_SEND_PARAMS
 from app.bridge.vst_parameter_mapper import VSTParameterMapper
+from scipy.signal import fftconvolve, sosfilt, butter
+
+
+def decay_reverb(y: np.ndarray, sr: int, decay_s: float, damping: float, seed: int = 0) -> np.ndarray:
+    """
+    Мокрый сигнал ревера с явным временем затухания RT60 (Freeverb из pedalboard длиннее ~3 с не тянет,
+    а у реальных миксов хвост бывает 4–8 с). Импульсная характеристика — экспоненциально затухающий шум:
+    верх (выше ~2 кГц) гаснет быстрее на долю damping, каналы декоррелированы (разный шум) для ширины.
+    Энергия ИХ нормирована к 1, громкость задает wet_level снаружи.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(min(decay_s * 1.5, 12.0) * sr)
+    t = np.arange(n) / sr
+    hf_decay = decay_s * (1.0 - 0.85 * float(np.clip(damping, 0.0, 1.0)))
+    low_sos = butter(2, 2000.0, "low", fs=sr, output="sos")
+    high_sos = butter(2, 2000.0, "high", fs=sr, output="sos")
+    channels = 1 if y.ndim == 1 else y.shape[0]
+    irs = []
+    for _ in range(channels):
+        noise = rng.standard_normal(n)
+        ir = (sosfilt(low_sos, noise) * np.exp(-6.91 * t / decay_s)
+              + sosfilt(high_sos, noise) * np.exp(-6.91 * t / max(hf_decay, 0.05)))
+        irs.append(ir / np.sqrt(np.sum(ir ** 2)))
+    if y.ndim == 1:
+        return fftconvolve(y, irs[0])[:len(y)].astype(np.float32)
+    mono = y.mean(axis=0)
+    return np.stack([fftconvolve(mono, ir)[:y.shape[1]] for ir in irs]).astype(np.float32)
 
 class DSPEngine:
     """
@@ -457,9 +484,14 @@ class DSPEngine:
                     predelay_ms = phys.get("predelay_ms", 0.0)
                     if predelay_ms > 0.5:
                         send.insert(0, Delay(delay_seconds=predelay_ms / 1000.0, feedback=0.0, mix=1.0))
-                    send.append(Reverb(room_size=phys.get("room_size", 0.5), damping=phys.get("damping", 0.5),
-                                       wet_level=1.0, dry_level=0.0))
-                    wet = Pedalboard(send)(y_working, sr)
+                    if "decay_s" in phys:
+                        # Ревер с явным RT60 вместо Freeverb (room_size тогда не используется)
+                        wet = decay_reverb(Pedalboard(send)(y_working, sr), sr, phys["decay_s"],
+                                           phys.get("damping", 0.5))
+                    else:
+                        send.append(Reverb(room_size=phys.get("room_size", 0.5), damping=phys.get("damping", 0.5),
+                                           wet_level=1.0, dry_level=0.0))
+                        wet = Pedalboard(send)(y_working, sr)
                     # JUCE Reverb внутри умножает dry_level на 2 (wet уже учтен через wet_level=1.0) — держим тот же
                     # масштаб, чтобы send-шина без predelay и фильтров звучала как последовательный Reverb
                     y_working = (2.0 * phys.get("dry_level", 0.9) * y_working + wet_val * wet).astype(np.float32)
