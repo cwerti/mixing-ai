@@ -1,0 +1,2568 @@
+{
+  "version": 1,
+  "generated": "2026-10-30",
+  "description": "Genre vocal archetypes mapped to the Mixing-AI palette in physical units. Research and sources: docs/research/styles/*.md. Values are clamped to DATAGEN_PLUGINS ranges (see clamped).",
+  "confidence_levels": {
+    "high": "engineer interview / >=3 agreeing sources",
+    "medium": "2 sources or detailed tutorial",
+    "low": "single preset-vendor blog or inference",
+    "hypothesis": "no sources found, by ear/analogy"
+  },
+  "mapping": {
+    "eq": "7 bands as in DSPEngine: band1 low shelf, bands 2-6 peak Q=1, band7 high shelf. HPF/LPF -> shelf -12 dB (same convention as app/eval/style_chains.palette_eq_from_bands). Unused bands have gain 0.",
+    "pitch_corrector.speed": "Inverse of VocalEnhancer.apply_autotune (retune_s = 0.01 + 0.19*(1-speed)); retune <=10 ms -> 1.0; 20 ms -> 0.95; 50 ms -> 0.79; 100 ms -> 0.53. source_retune_ms keeps the research value.",
+    "compressor.threshold_db": "Estimated for target_gr_db on a -23 LUFS normalized vocal, loud phrases ~ -15 dBFS RMS: thr = -15 - GR/(1-1/ratio). Re-calibrate against real renders.",
+    "deesser": "No frequency control in palette; threshold/ratio only.",
+    "reverb": "Send mode (predelay_ms/low_cut_hz/high_cut_hz/decay_s set -> parallel convolution reverb). room_size derived from decay_s, damping from high_cut_hz, dry_level 1.0 (send).",
+    "delay": "delay_seconds computed from sync at bpm_ref (re-compute for the real tempo); palette range 0.08-0.5 s.",
+    "harmony": "Render-only layer (RENDER_ONLY_PLUGINS); not predicted/optimized; pass via fixed_plugins.",
+    "chain order": "Sorted by CHAIN_ORDER; real-world order may differ (see docs)."
+  },
+  "plugin_order": [
+    "eq",
+    "pitch_corrector",
+    "compressor",
+    "deesser",
+    "multiband_compressor",
+    "distortion",
+    "chorus",
+    "stereo_enhancer",
+    "reverb",
+    "delay",
+    "exciter",
+    "harmony"
+  ],
+  "clamped": [
+    "trap_travis: eq.band1_freq_hz 130 -> 100",
+    "boom_bap: delay.feedback 0 -> 0.1",
+    "rnb_sza: chorus.rate_hz 0.3 -> 0.4",
+    "indie_alt_rock: delay.feedback 0 -> 0.1",
+    "edm_topline: eq.band1_freq_hz 150 -> 100",
+    "ru_kizaru_bbt: eq.band1_freq_hz 117 -> 100",
+    "ru_kai_angel_9mice: eq.band1_freq_hz 130 -> 100",
+    "ru_pop_rap: eq.band1_freq_hz 130 -> 100",
+    "ru_indie_zemfira: delay.feedback 0 -> 0.1"
+  ],
+  "archetypes": [
+    {
+      "id": "trap_travis",
+      "label": "Trap, Travis Scott (space trap)",
+      "family": "western",
+      "doc": "trap.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100.0,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 280,
+            "band2_gain_db": -3,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3000,
+            "band5_gain_db": 2.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000,
+            "band7_gain_db": 1.5
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 1.0
+          },
+          "source_retune_ms": 8
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.4,
+            "ratio": 4.5,
+            "attack_ms": 12,
+            "release_ms": 100
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 3.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.883,
+            "damping": 0.45,
+            "wet_level": 0.32,
+            "dry_level": 1.0,
+            "predelay_ms": 30,
+            "low_cut_hz": 250,
+            "high_cut_hz": 9000,
+            "decay_s": 3.5
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.4,
+            "feedback": 0.28,
+            "mix": 0.25
+          },
+          "sync": "1/4",
+          "bpm_ref": 150
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": -12,
+            "formant_shift": 0.0,
+            "level_db": -10,
+            "delay_ms": 0,
+            "detune_cents": 0,
+            "width": 0.0,
+            "mix": 1.0
+          },
+          "role": "octave_down_hook"
+        },
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -8,
+            "delay_ms": 15,
+            "detune_cents": 6,
+            "width": 0.7,
+            "mix": 1.0
+          },
+          "role": "double_LR35"
+        }
+      ],
+      "palette_gaps": [
+        "second delay (slapback 80-120 ms + 1/4) - only one delay",
+        "heavier distortion only on adlibs (parallel bus)",
+        "formant -1 st on lead (formant only on harmony layer)",
+        "HPF 120-140 Hz approximated by low shelf -12 dB at 100 Hz"
+      ],
+      "metric_signature": [
+        "pitch_cents low (hard tune)",
+        "reverb_tail_db high, tail_brightness_db low (dark long tail)",
+        "width_tails_db high vs width_notes_db (dry centre, wide tail)",
+        "delay_peak present at ~0.4 s"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "trap_atl",
+      "label": "Trap, Atlanta (Future / Young Thug / Gunna)",
+      "family": "western",
+      "doc": "trap.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 300,
+            "band2_gain_db": -3,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3500,
+            "band5_gain_db": 3,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000,
+            "band7_gain_db": 2
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.921
+          },
+          "source_retune_ms": 25
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 6,
+          "params": {
+            "threshold_db": -22.5,
+            "ratio": 5,
+            "attack_ms": 8,
+            "release_ms": 80
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 2.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.54,
+            "damping": 0.45,
+            "wet_level": 0.15,
+            "dry_level": 1.0,
+            "predelay_ms": 20,
+            "low_cut_hz": 250,
+            "high_cut_hz": 10000,
+            "decay_s": 1.2
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.214,
+            "feedback": 0.2,
+            "mix": 0.15
+          },
+          "sync": "1/8",
+          "bpm_ref": 140
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -10,
+            "delay_ms": 20,
+            "detune_cents": 8,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "adlib_or_double"
+        }
+      ],
+      "palette_gaps": [
+        "adlibs with own timbre (separate chain)",
+        "line-end delay throws (static mix only)"
+      ],
+      "metric_signature": [
+        "pitch_cents low",
+        "reverb_tail_db low-medium",
+        "crest_db low (dense)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "melodic_juice",
+      "label": "Melodic rap, Juice WRLD",
+      "family": "western",
+      "doc": "melodic_emo_rap.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 90,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 350,
+            "band3_gain_db": -2,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4000,
+            "band5_gain_db": 2.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 14000,
+            "band7_gain_db": 2
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.947
+          },
+          "source_retune_ms": 20
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 4,
+            "attack_ms": 17,
+            "release_ms": 55
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 1.5
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.6,
+            "damping": 0.45,
+            "wet_level": 0.28,
+            "dry_level": 1.0,
+            "predelay_ms": 25,
+            "low_cut_hz": 200,
+            "high_cut_hz": 10000,
+            "decay_s": 1.5
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.353,
+            "feedback": 0.15,
+            "mix": 0.22
+          },
+          "sync": "1/8",
+          "bpm_ref": 85
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "two parallel reverbs (room 1 s + plate 1.8 s) merged into one 1.5 s send"
+      ],
+      "metric_signature": [
+        "pitch_cents low-medium (retune ~20 ms, audible but smooth)",
+        "reverb_tail_db medium",
+        "air_ratio_db high"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "emo_peep",
+      "label": "Emo rap, Lil Peep",
+      "family": "western",
+      "doc": "melodic_emo_rap.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 300,
+            "band2_gain_db": -2.5,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3000,
+            "band5_gain_db": 1.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": -2
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.737
+          },
+          "source_retune_ms": 60
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4.5,
+          "params": {
+            "threshold_db": -21.8,
+            "ratio": 3,
+            "attack_ms": 15,
+            "release_ms": 100
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 5.0
+          }
+        },
+        {
+          "plugin": "chorus",
+          "params": {
+            "rate_hz": 0.8,
+            "depth": 0.2,
+            "feedback": 0.0,
+            "mix": 0.12
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.775,
+            "damping": 0.45,
+            "wet_level": 0.35,
+            "dry_level": 1.0,
+            "predelay_ms": 30,
+            "low_cut_hz": 300,
+            "high_cut_hz": 8000,
+            "decay_s": 2.5
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.429,
+            "feedback": 0.3,
+            "mix": 0.18
+          },
+          "sync": "1/4",
+          "bpm_ref": 140
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -7,
+            "delay_ms": 20,
+            "detune_cents": 12,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "hook_stack_6_12"
+        }
+      ],
+      "palette_gaps": [
+        "6-12 doubles panned 30/60/100 % (one harmony layer + chorus as proxy)",
+        "parallel saturation 20-40 % (insert only)"
+      ],
+      "metric_signature": [
+        "width_notes_db high on hooks",
+        "reverb_tail_db high, tail_brightness_db low",
+        "air_ratio_db low (dark)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "drill_uk",
+      "label": "UK drill",
+      "family": "western",
+      "doc": "drill.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 280,
+            "band2_gain_db": 1.5,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1100,
+            "band4_gain_db": -2.5,
+            "band5_freq_hz": 3000,
+            "band5_gain_db": -1.5,
+            "band6_freq_hz": 10000,
+            "band6_gain_db": 1.5,
+            "band7_freq_hz": 12000.0,
+            "band7_gain_db": 0.0
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 1.0
+          },
+          "source_retune_ms": 8
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 7,
+          "params": {
+            "threshold_db": -23.8,
+            "ratio": 5,
+            "attack_ms": 10,
+            "release_ms": 110
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.36,
+            "damping": 0.45,
+            "wet_level": 0.18,
+            "dry_level": 1.0,
+            "predelay_ms": 10,
+            "low_cut_hz": 250,
+            "high_cut_hz": 8000,
+            "decay_s": 0.65
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.211,
+            "feedback": 0.25,
+            "mix": 0.1
+          },
+          "sync": "1/8",
+          "bpm_ref": 142
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -10,
+            "delay_ms": 12,
+            "detune_cents": 5,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "double_pm5c_hooks_only"
+        }
+      ],
+      "palette_gaps": [
+        "parallel compression 10:1 blended low",
+        "verse dry & centred vs hook doubles (no section automation)"
+      ],
+      "metric_signature": [
+        "reverb_tail_db low (< 1 s)",
+        "crest_db low, dr_p95_p10_db low (GR 6-8 dB)",
+        "air_ratio_db medium-low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "drill_ny",
+      "label": "NY / Brooklyn drill (Pop Smoke)",
+      "family": "western",
+      "doc": "drill.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 80,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 150,
+            "band2_gain_db": 1,
+            "band3_freq_hz": 400,
+            "band3_gain_db": -1.5,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3000,
+            "band5_gain_db": 1,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000.0,
+            "band7_gain_db": 0.0
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.895
+          },
+          "source_retune_ms": 30
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 4,
+            "attack_ms": 15,
+            "release_ms": 120
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 3.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.62,
+            "damping": 0.65,
+            "wet_level": 0.25,
+            "dry_level": 1.0,
+            "predelay_ms": 15,
+            "low_cut_hz": 200,
+            "high_cut_hz": 7000,
+            "decay_s": 1.6
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.429,
+            "feedback": 0.25,
+            "mix": 0.15
+          },
+          "sync": "1/4",
+          "bpm_ref": 140
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -12,
+            "delay_ms": 10,
+            "detune_cents": 8,
+            "width": 0.8,
+            "mix": 1.0
+          },
+          "role": "microshift_throw_hook"
+        }
+      ],
+      "palette_gaps": [
+        "SPX90 / Rev-7 80s reverb character (early reflections, metallic)",
+        "voice sits low in beat (level, not processing)"
+      ],
+      "metric_signature": [
+        "more low-mid in ltas than UK",
+        "reverb_tail_db medium"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "boom_bap",
+      "label": "Boom bap / old-school rap",
+      "family": "western",
+      "doc": "boom_bap.md",
+      "confidence": "medium",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 600,
+            "band3_gain_db": -1.5,
+            "band4_freq_hz": 1000,
+            "band4_gain_db": 2,
+            "band5_freq_hz": 5000,
+            "band5_gain_db": 2.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 8000,
+            "band7_gain_db": 1.5
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 6,
+          "params": {
+            "threshold_db": -23.0,
+            "ratio": 4,
+            "attack_ms": 1,
+            "release_ms": 50
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 2.5,
+          "params": {
+            "threshold_db": -18.8,
+            "ratio": 3,
+            "attack_ms": 10,
+            "release_ms": 300
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 2.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.46,
+            "damping": 0.45,
+            "wet_level": 0.08,
+            "dry_level": 1.0,
+            "predelay_ms": 10,
+            "low_cut_hz": 300,
+            "high_cut_hz": 8000,
+            "decay_s": 0.9
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.1,
+            "feedback": 0.1,
+            "mix": 0.18
+          },
+          "sync": "unsynced 100 ms",
+          "bpm_ref": 90
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -8,
+            "delay_ms": 12,
+            "detune_cents": 4,
+            "width": 0.3,
+            "mix": 1.0
+          },
+          "role": "punch_in_double"
+        }
+      ],
+      "palette_gaps": [
+        "noise gate between phrases",
+        "slapback with 0 feedback (palette min 0.10)",
+        "parallel compression 10:1"
+      ],
+      "metric_signature": [
+        "pitch_cents high (no tune)",
+        "reverb_tail_db very low",
+        "delay_peak at ~0.1 s",
+        "crest_db low (FET+opto)",
+        "air_ratio_db lower than modern pop/trap"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "pop_intimate",
+      "label": "Intimate pop, Billie Eilish",
+      "family": "western",
+      "doc": "pop_intimate.md",
+      "confidence": "high",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 80,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 500,
+            "band3_gain_db": -2,
+            "band4_freq_hz": 2800,
+            "band4_gain_db": -2,
+            "band5_freq_hz": 3500.0,
+            "band5_gain_db": 0.0,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000.0,
+            "band7_gain_db": 0.0
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 3,
+          "params": {
+            "threshold_db": -20.0,
+            "ratio": 2.5,
+            "attack_ms": 20,
+            "release_ms": 300
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -26,
+            "ratio": 3
+          }
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -10,
+            "delay_ms": 12,
+            "detune_cents": 10,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "microshift_width"
+        }
+      ],
+      "palette_gaps": [
+        "Vocal Rider level riding",
+        "MicroShift width aux approximated by harmony layer (detuned, delayed, wide)"
+      ],
+      "metric_signature": [
+        "reverb_tail_db minimal (dry)",
+        "decay_fast_db fast",
+        "width_notes_db medium from MicroShift without tail",
+        "pitch_cents high (no tune)",
+        "sib_p90_db controlled",
+        "highmid (2.5-3 kHz) dip in ltas"
+      ],
+      "notes": "No reverb or delay on purpose (Kinelski: artists asked to remove reverb)."
+    },
+    {
+      "id": "pop_bright",
+      "label": "Bright pop, Ariana Grande",
+      "family": "western",
+      "doc": "pop_bright.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 300,
+            "band2_gain_db": -1.5,
+            "band3_freq_hz": 500,
+            "band3_gain_db": 1,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4000,
+            "band5_gain_db": 1.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 16000,
+            "band7_gain_db": 4
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.789
+          },
+          "source_retune_ms": 50
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5.5,
+          "params": {
+            "threshold_db": -22.3,
+            "ratio": 4,
+            "attack_ms": 3,
+            "release_ms": 60
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 3.5,
+          "params": {
+            "threshold_db": -20.2,
+            "ratio": 3,
+            "attack_ms": 15,
+            "release_ms": 200
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -28,
+            "ratio": 5
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.66,
+            "damping": 0.3,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 30,
+            "low_cut_hz": 300,
+            "high_cut_hz": 12000,
+            "decay_s": 1.8
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.273,
+            "feedback": 0.2,
+            "mix": 0.12
+          },
+          "sync": "1/8",
+          "bpm_ref": 110
+        },
+        {
+          "plugin": "exciter",
+          "params": {
+            "mix": 0.15,
+            "cutoff_hz": 8000
+          }
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -9,
+            "delay_ms": 15,
+            "detune_cents": 8,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "stack_double"
+        },
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": -12,
+            "formant_shift": 0.0,
+            "level_db": -16,
+            "delay_ms": 0,
+            "detune_cents": 0,
+            "width": 0.0,
+            "mix": 1.0
+          },
+          "role": "octave_down_thickener"
+        }
+      ],
+      "palette_gaps": [
+        "sidechain-ducked reverb/delay",
+        "verse/chorus automation of reverb size",
+        "multi-voice stacks"
+      ],
+      "metric_signature": [
+        "air_ratio_db high",
+        "crest_db low (two-stage comp)",
+        "reverb_tail_db medium",
+        "pitch_cents low but natural"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "rnb_weeknd",
+      "label": "Alt-R&B, The Weeknd",
+      "family": "western",
+      "doc": "rnb.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 80,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 280,
+            "band2_gain_db": -2.5,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500,
+            "band4_gain_db": -1.5,
+            "band5_freq_hz": 3500.0,
+            "band5_gain_db": 0.0,
+            "band6_freq_hz": 9000,
+            "band6_gain_db": 2.5,
+            "band7_freq_hz": 14000,
+            "band7_gain_db": 1.5
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.947
+          },
+          "source_retune_ms": 20
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -22.0,
+            "ratio": 3.5,
+            "attack_ms": 30,
+            "release_ms": 200
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 1.0
+          }
+        },
+        {
+          "plugin": "chorus",
+          "params": {
+            "rate_hz": 0.4,
+            "depth": 0.12,
+            "feedback": 0.0,
+            "mix": 0.1
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.73,
+            "damping": 0.65,
+            "wet_level": 0.25,
+            "dry_level": 1.0,
+            "predelay_ms": 45,
+            "low_cut_hz": 250,
+            "high_cut_hz": 7000,
+            "decay_s": 2.2
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.263,
+            "feedback": 0.2,
+            "mix": 0.12
+          },
+          "sync": "1/8d",
+          "bpm_ref": 171
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "chorus only on reverb return (After Hours) - our chorus is an insert"
+      ],
+      "metric_signature": [
+        "reverb_tail_db medium-high with long predelay",
+        "pitch_cents low-medium",
+        "tail_brightness_db low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "rnb_sza",
+      "label": "Alt-R&B, SZA",
+      "family": "western",
+      "doc": "rnb.md",
+      "confidence": "medium",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 80,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 400,
+            "band3_gain_db": -1.5,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3500.0,
+            "band5_gain_db": 0.0,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000,
+            "band7_gain_db": 2
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.632
+          },
+          "source_retune_ms": 80
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 2.5,
+            "attack_ms": 30,
+            "release_ms": 250
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "chorus",
+          "params": {
+            "rate_hz": 0.4,
+            "depth": 0.15,
+            "feedback": 0.3,
+            "mix": 0.08
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.7,
+            "damping": 0.45,
+            "wet_level": 0.3,
+            "dry_level": 1.0,
+            "predelay_ms": 20,
+            "low_cut_hz": 250,
+            "high_cut_hz": 9000,
+            "decay_s": 2.0
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.337,
+            "feedback": 0.25,
+            "mix": 0.12
+          },
+          "sync": "1/8",
+          "bpm_ref": 89
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -14,
+            "delay_ms": 10,
+            "detune_cents": 8,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "microshift_width"
+        }
+      ],
+      "palette_gaps": [
+        "MetaFlanger (flanger) - chorus with feedback as proxy",
+        "spring reverb on BGV",
+        "backing vocals with own chain (Radiator drive)"
+      ],
+      "metric_signature": [
+        "reverb_tail_db high ('pretty prominent' reverb)",
+        "modulated width (width_tails_db)",
+        "pitch_cents medium on lead"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "phonk_memphis",
+      "label": "Phonk / Memphis vocal sample",
+      "family": "western",
+      "doc": "phonk.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200,
+            "band2_gain_db": -6,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1200,
+            "band4_gain_db": 4,
+            "band5_freq_hz": 3500.0,
+            "band5_gain_db": 0.0,
+            "band6_freq_hz": 6000,
+            "band6_gain_db": -12,
+            "band7_freq_hz": 8000,
+            "band7_gain_db": -12
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 6,
+          "params": {
+            "threshold_db": -22.2,
+            "ratio": 6,
+            "attack_ms": 5,
+            "release_ms": 80
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 14.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.85,
+            "damping": 0.8,
+            "wet_level": 0.35,
+            "dry_level": 1.0,
+            "predelay_ms": 10,
+            "low_cut_hz": 300,
+            "high_cut_hz": 5000,
+            "decay_s": 3.0
+          }
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": -3,
+            "formant_shift": -3,
+            "level_db": 0,
+            "delay_ms": 0,
+            "detune_cents": 0,
+            "width": 0.0,
+            "mix": 1.0
+          },
+          "role": "screwed_pitch_down"
+        }
+      ],
+      "palette_gaps": [
+        "pitch-down of the LEAD itself (harmony adds a parallel layer, lead stays)",
+        "true band-pass 300-3400 Hz (shelves only)",
+        "bitcrush / sample-rate reduction",
+        "tape wow & flutter, vinyl noise"
+      ],
+      "metric_signature": [
+        "ltas: narrow mid band, low air_ratio_db",
+        "flatness up from distortion (not in style metric weights)",
+        "reverb_tail_db high, dark"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "lofi_bedroom",
+      "label": "Lo-fi / bedroom pop",
+      "family": "western",
+      "doc": "lofi_bedroom.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 250,
+            "band3_gain_db": -1.5,
+            "band4_freq_hz": 1200,
+            "band4_gain_db": 1.5,
+            "band5_freq_hz": 3500,
+            "band5_gain_db": 2,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 9000,
+            "band7_gain_db": -4
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 3,
+          "params": {
+            "threshold_db": -20.0,
+            "ratio": 2.5,
+            "attack_ms": 45,
+            "release_ms": 200
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 3.0
+          }
+        },
+        {
+          "plugin": "chorus",
+          "params": {
+            "rate_hz": 0.6,
+            "depth": 0.12,
+            "feedback": 0.0,
+            "mix": 0.08
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.46,
+            "damping": 0.65,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 50,
+            "low_cut_hz": 200,
+            "high_cut_hz": 7000,
+            "decay_s": 0.9
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.5,
+            "feedback": 0.15,
+            "mix": 0.1
+          },
+          "sync": "1/8d",
+          "bpm_ref": 90
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "tape wow/flutter, hiss, bitcrush",
+        "spring reverb"
+      ],
+      "metric_signature": [
+        "air_ratio_db low",
+        "crest_db higher (gentle comp)",
+        "pitch_cents high (light or no tune)",
+        "width_global low (mono lead)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "indie_alt_rock",
+      "label": "Indie / alt rock",
+      "family": "western",
+      "doc": "indie_alt_rock.md",
+      "confidence": "medium",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 400,
+            "band3_gain_db": 1,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3500,
+            "band5_gain_db": 2.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": -2
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4,
+          "params": {
+            "threshold_db": -20.3,
+            "ratio": 4,
+            "attack_ms": 3,
+            "release_ms": 60
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 2,
+          "params": {
+            "threshold_db": -18.0,
+            "ratio": 3,
+            "attack_ms": 10,
+            "release_ms": 300
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 5.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.56,
+            "damping": 0.45,
+            "wet_level": 0.15,
+            "dry_level": 1.0,
+            "predelay_ms": 50,
+            "low_cut_hz": 250,
+            "high_cut_hz": 8000,
+            "decay_s": 1.3
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.11,
+            "feedback": 0.1,
+            "mix": 0.15
+          },
+          "sync": "unsynced 110 ms"
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "parallel saturation with expander",
+        "distorted slapback return",
+        "dynamic high shelf"
+      ],
+      "metric_signature": [
+        "pitch_cents high",
+        "air_ratio_db medium-low",
+        "delay_peak at ~0.11 s"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "pop_punk",
+      "label": "Pop-punk (Neck Deep / ADTR, Andrew Wade)",
+      "family": "western",
+      "doc": "pop_punk.md",
+      "confidence": "high",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 250,
+            "band2_gain_db": -2,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4000,
+            "band5_gain_db": 2.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": 3
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.842
+          },
+          "source_retune_ms": 40
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 8.5,
+          "params": {
+            "threshold_db": -24.4,
+            "ratio": 10,
+            "attack_ms": 1,
+            "release_ms": 50
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5.5,
+          "params": {
+            "threshold_db": -23.2,
+            "ratio": 3,
+            "attack_ms": 20,
+            "release_ms": 150
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -26,
+            "ratio": 4
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 3.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.58,
+            "damping": 0.45,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 20,
+            "low_cut_hz": 250,
+            "high_cut_hz": 9000,
+            "decay_s": 1.4
+          }
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -4,
+            "delay_ms": 18,
+            "detune_cents": 6,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "chorus_triple_LR"
+        }
+      ],
+      "palette_gaps": [
+        "1176 all-buttons FET character (approximated: 10:1 1 ms + drive)",
+        "gang vocals with long delay"
+      ],
+      "metric_signature": [
+        "crest_db very low (GR up to 10 dB + bus 5-6 dB)",
+        "width_notes_db high on choruses (hard-panned doubles)",
+        "reverb_tail_db low-medium (~20 % wet)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "edm_topline",
+      "label": "EDM topline",
+      "family": "western",
+      "doc": "edm_topline.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100.0,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 250,
+            "band2_gain_db": -3,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4000,
+            "band5_gain_db": 2,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 14000,
+            "band7_gain_db": 4
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.974
+          },
+          "source_retune_ms": 15
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 6,
+          "params": {
+            "threshold_db": -22.2,
+            "ratio": 6,
+            "attack_ms": 2,
+            "release_ms": 60
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "multiband_compressor",
+          "params": {
+            "depth": 0.4
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.82,
+            "damping": 0.45,
+            "wet_level": 0.3,
+            "dry_level": 1.0,
+            "predelay_ms": 40,
+            "low_cut_hz": 300,
+            "high_cut_hz": 10000,
+            "decay_s": 2.8
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.357,
+            "feedback": 0.35,
+            "mix": 0.2
+          },
+          "sync": "1/8d",
+          "bpm_ref": 126
+        },
+        {
+          "plugin": "exciter",
+          "params": {
+            "mix": 0.15,
+            "cutoff_hz": 9000
+          }
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "sidechain ducking of reverb/delay from dry vocal (core move)",
+        "second reverb/delay send"
+      ],
+      "metric_signature": [
+        "reverb_tail_db high but decay_fast_db fast inside phrases (ducking) - our renderer can't reproduce",
+        "air_ratio_db high",
+        "crest_db very low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "afrobeats",
+      "label": "Afrobeats (Burna Boy / Wizkid)",
+      "family": "western",
+      "doc": "afrobeats.md",
+      "confidence": "medium",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 80,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 300,
+            "band3_gain_db": -1.5,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4300,
+            "band5_gain_db": 1.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 13500,
+            "band7_gain_db": 2.5
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.921
+          },
+          "source_retune_ms": 25
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4.5,
+          "params": {
+            "threshold_db": -22.5,
+            "ratio": 2.5,
+            "attack_ms": 20,
+            "release_ms": 125
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -26,
+            "ratio": 3
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 2.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.5,
+            "damping": 0.45,
+            "wet_level": 0.18,
+            "dry_level": 1.0,
+            "predelay_ms": 50,
+            "low_cut_hz": 300,
+            "high_cut_hz": 9000,
+            "decay_s": 1.0
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.429,
+            "feedback": 0.25,
+            "mix": 0.15
+          },
+          "sync": "1/8d",
+          "bpm_ref": 105
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 4,
+            "formant_shift": 0.0,
+            "level_db": -8,
+            "delay_ms": 0,
+            "detune_cents": 0,
+            "width": 0.3,
+            "mix": 1.0
+          },
+          "role": "third_above_hook"
+        }
+      ],
+      "palette_gaps": [
+        "delay throws on phrase-final words (send automation)",
+        "pitch-shifted delay return",
+        "parallel Devil-Loc bus"
+      ],
+      "metric_signature": [
+        "pitch_cents medium (humanize)",
+        "crest_db higher than trap (light comp)",
+        "delay_peak present",
+        "reverb_tail_db low-medium"
+      ],
+      "notes": "Harmony interval +3 or +4 st depends on key/scale (third)."
+    },
+    {
+      "id": "ru_skriptonit",
+      "label": "Скриптонит",
+      "family": "russian",
+      "doc": "ru_skriptonit.md",
+      "confidence": "hypothesis",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 80,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 250,
+            "band2_gain_db": 1,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3500,
+            "band5_gain_db": -1.5,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": -3
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4,
+          "params": {
+            "threshold_db": -21.0,
+            "ratio": 3,
+            "attack_ms": 25,
+            "release_ms": 200
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 2.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.5,
+            "damping": 0.65,
+            "wet_level": 0.15,
+            "dry_level": 1.0,
+            "predelay_ms": 15,
+            "low_cut_hz": 200,
+            "high_cut_hz": 6000,
+            "decay_s": 1.0
+          }
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "edits (pauses, stutters) are arrangement, not processing"
+      ],
+      "metric_signature": [
+        "air_ratio_db low",
+        "pitch_cents high (no tune)",
+        "voice level low vs beat (not measurable on acapella)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_kizaru_bbt",
+      "label": "Kizaru / Big Baby Tape",
+      "family": "russian",
+      "doc": "ru_kizaru_bbt.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100.0,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 225,
+            "band2_gain_db": -1.5,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1800,
+            "band4_gain_db": 3,
+            "band5_freq_hz": 3500.0,
+            "band5_gain_db": 0.0,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": 1.5
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 1.0
+          },
+          "source_retune_ms": 0
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 4,
+            "attack_ms": 10,
+            "release_ms": 100
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 6.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.85,
+            "damping": 0.65,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 22,
+            "low_cut_hz": 300,
+            "high_cut_hz": 6000,
+            "decay_s": 3.0
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.429,
+            "feedback": 0.25,
+            "mix": 0.12
+          },
+          "sync": "1/4",
+          "bpm_ref": 140
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -10,
+            "delay_ms": 15,
+            "detune_cents": 6,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "double"
+        }
+      ],
+      "palette_gaps": [
+        "parallel telephone layer at 25 %",
+        "1/16 high-feedback delay only on the double"
+      ],
+      "metric_signature": [
+        "pitch_cents low",
+        "highmid_ratio_db high ('пописклявить')",
+        "reverb_tail_db medium, dark"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_melodic_trap",
+      "label": "Платина / OG Buda / Mayot",
+      "family": "russian",
+      "doc": "ru_melodic_trap.md",
+      "confidence": "low",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 160,
+            "band2_gain_db": -3,
+            "band3_freq_hz": 450,
+            "band3_gain_db": -2,
+            "band4_freq_hz": 1500,
+            "band4_gain_db": 3,
+            "band5_freq_hz": 2700,
+            "band5_gain_db": -2,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000,
+            "band7_gain_db": 3
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 1.0
+          },
+          "source_retune_ms": 0
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 4,
+            "attack_ms": 10,
+            "release_ms": 100
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -24.0,
+            "ratio": 4.0
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 3.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.66,
+            "damping": 0.45,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 20,
+            "low_cut_hz": 300,
+            "high_cut_hz": 8000,
+            "decay_s": 1.8
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.429,
+            "feedback": 0.3,
+            "mix": 0.2
+          },
+          "sync": "1/4",
+          "bpm_ref": 140
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -10,
+            "delay_ms": 12,
+            "detune_cents": 10,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "microshift_double"
+        }
+      ],
+      "palette_gaps": [
+        "multiband -8 dB on 100-600 Hz (approximated by EQ cuts)",
+        "parallel CLA-76 at 7 %",
+        "master clipper 'crash'"
+      ],
+      "metric_signature": [
+        "pitch_cents low",
+        "low-mid suppressed in ltas",
+        "width_notes_db from double"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_pharaoh_cloud",
+      "label": "Pharaoh, cloud rap (ранний)",
+      "family": "russian",
+      "doc": "ru_pharaoh_cloud.md",
+      "confidence": "hypothesis",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 350,
+            "band3_gain_db": 1,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3500.0,
+            "band5_gain_db": 0.0,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": -3
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.526
+          },
+          "source_retune_ms": 100
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4,
+          "params": {
+            "threshold_db": -21.0,
+            "ratio": 3,
+            "attack_ms": 20,
+            "release_ms": 150
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.917,
+            "damping": 0.8,
+            "wet_level": 0.38,
+            "dry_level": 1.0,
+            "predelay_ms": 10,
+            "low_cut_hz": 250,
+            "high_cut_hz": 5000,
+            "decay_s": 4.0
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.429,
+            "feedback": 0.45,
+            "mix": 0.15
+          },
+          "sync": "1/4",
+          "bpm_ref": 140
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [],
+      "metric_signature": [
+        "reverb_tail_db very high, tail_brightness_db very low",
+        "air_ratio_db low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_kai_angel_9mice",
+      "label": "Kai Angel / 9mice (rage)",
+      "family": "russian",
+      "doc": "ru_kai_angel_9mice.md",
+      "confidence": "medium",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100.0,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 250,
+            "band2_gain_db": -3,
+            "band3_freq_hz": 390,
+            "band3_gain_db": -3,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4500,
+            "band5_gain_db": 4.5,
+            "band6_freq_hz": 5000,
+            "band6_gain_db": -3,
+            "band7_freq_hz": 16000,
+            "band7_gain_db": 4
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 1.0
+          },
+          "source_retune_ms": 0
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 4,
+            "attack_ms": 5,
+            "release_ms": 60
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 3,
+          "params": {
+            "threshold_db": -19.5,
+            "ratio": 3,
+            "attack_ms": 10,
+            "release_ms": 100
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -28,
+            "ratio": 6
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 8.0
+          }
+        },
+        {
+          "plugin": "chorus",
+          "params": {
+            "rate_hz": 1.0,
+            "depth": 0.2,
+            "feedback": 0.0,
+            "mix": 0.07
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.743,
+            "damping": 0.8,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 7,
+            "low_cut_hz": 300,
+            "high_cut_hz": 5500,
+            "decay_s": 2.29
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.42,
+            "feedback": 0.3,
+            "mix": 0.15
+          },
+          "sync": "1/4",
+          "bpm_ref": 143
+        },
+        {
+          "plugin": "exciter",
+          "params": {
+            "mix": 0.2,
+            "cutoff_hz": 8000
+          }
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -12,
+            "delay_ms": 15,
+            "detune_cents": 10,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "doubler_send"
+        }
+      ],
+      "palette_gaps": [
+        "parallel 'sand' bus (Revival max, HPF 2 kHz, 4:1)",
+        "narrow notches Q 6-12 (our peaks are Q=1)",
+        "Soothe2 dynamic resonance control"
+      ],
+      "metric_signature": [
+        "pitch_cents very low",
+        "air_ratio_db high",
+        "sib_p90_db controlled despite bright top",
+        "crest_db low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_pop_rap",
+      "label": "Инстасамка / Моргенштерн (поп-рэп)",
+      "family": "russian",
+      "doc": "ru_pop_rap.md",
+      "confidence": "hypothesis",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100.0,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 280,
+            "band2_gain_db": -2,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4000,
+            "band5_gain_db": 3,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000,
+            "band7_gain_db": 4
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 1.0
+          },
+          "source_retune_ms": 5
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 7,
+          "params": {
+            "threshold_db": -23.4,
+            "ratio": 6,
+            "attack_ms": 3,
+            "release_ms": 60
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 3,
+          "params": {
+            "threshold_db": -19.5,
+            "ratio": 3,
+            "attack_ms": 15,
+            "release_ms": 150
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -28,
+            "ratio": 5
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.52,
+            "damping": 0.45,
+            "wet_level": 0.15,
+            "dry_level": 1.0,
+            "predelay_ms": 20,
+            "low_cut_hz": 300,
+            "high_cut_hz": 10000,
+            "decay_s": 1.1
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.5,
+            "feedback": 0.2,
+            "mix": 0.12
+          },
+          "sync": "1/4",
+          "bpm_ref": 120
+        },
+        {
+          "plugin": "exciter",
+          "params": {
+            "mix": 0.15,
+            "cutoff_hz": 8500
+          }
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -8,
+            "delay_ms": 15,
+            "detune_cents": 6,
+            "width": 1.0,
+            "mix": 1.0
+          },
+          "role": "double"
+        }
+      ],
+      "palette_gaps": [],
+      "metric_signature": [
+        "pitch_cents very low",
+        "air_ratio_db high",
+        "crest_db very low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_indie_zemfira",
+      "label": "Земфира (инди/рок)",
+      "family": "russian",
+      "doc": "ru_indie_zemfira.md",
+      "confidence": "hypothesis",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 200.0,
+            "band2_gain_db": 0.0,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 3000,
+            "band5_gain_db": 2,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 10000,
+            "band7_gain_db": -1
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 4,
+          "params": {
+            "threshold_db": -20.3,
+            "ratio": 4,
+            "attack_ms": 5,
+            "release_ms": 80
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 2,
+          "params": {
+            "threshold_db": -18.0,
+            "ratio": 3,
+            "attack_ms": 20,
+            "release_ms": 300
+          }
+        },
+        {
+          "plugin": "distortion",
+          "params": {
+            "drive_db": 4.0
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.62,
+            "damping": 0.45,
+            "wet_level": 0.16,
+            "dry_level": 1.0,
+            "predelay_ms": 45,
+            "low_cut_hz": 250,
+            "high_cut_hz": 8000,
+            "decay_s": 1.6
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.11,
+            "feedback": 0.1,
+            "mix": 0.1
+          },
+          "sync": "unsynced 110 ms"
+        }
+      ],
+      "layers": [],
+      "palette_gaps": [
+        "parallel saturation"
+      ],
+      "metric_signature": [
+        "pitch_cents high (no tune)",
+        "air_ratio_db medium-low"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "ru_pop_dmitrienko",
+      "label": "Ваня Дмитриенко (поп)",
+      "family": "russian",
+      "doc": "ru_pop_dmitrienko.md",
+      "confidence": "hypothesis",
+      "chain": [
+        {
+          "plugin": "eq",
+          "params": {
+            "band1_freq_hz": 100,
+            "band1_gain_db": -12,
+            "band2_freq_hz": 300,
+            "band2_gain_db": -2,
+            "band3_freq_hz": 500.0,
+            "band3_gain_db": 0.0,
+            "band4_freq_hz": 1500.0,
+            "band4_gain_db": 0.0,
+            "band5_freq_hz": 4000,
+            "band5_gain_db": 2,
+            "band6_freq_hz": 8000.0,
+            "band6_gain_db": 0.0,
+            "band7_freq_hz": 12000,
+            "band7_gain_db": 2.5
+          }
+        },
+        {
+          "plugin": "pitch_corrector",
+          "params": {
+            "speed": 0.921
+          },
+          "source_retune_ms": 25
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 5,
+          "params": {
+            "threshold_db": -21.7,
+            "ratio": 4,
+            "attack_ms": 5,
+            "release_ms": 80
+          }
+        },
+        {
+          "plugin": "compressor",
+          "target_gr_db": 2.5,
+          "params": {
+            "threshold_db": -18.8,
+            "ratio": 3,
+            "attack_ms": 20,
+            "release_ms": 200
+          }
+        },
+        {
+          "plugin": "deesser",
+          "params": {
+            "threshold_db": -26,
+            "ratio": 4
+          }
+        },
+        {
+          "plugin": "reverb",
+          "params": {
+            "room_size": 0.66,
+            "damping": 0.3,
+            "wet_level": 0.2,
+            "dry_level": 1.0,
+            "predelay_ms": 40,
+            "low_cut_hz": 300,
+            "high_cut_hz": 11000,
+            "decay_s": 1.8
+          }
+        },
+        {
+          "plugin": "delay",
+          "params": {
+            "delay_seconds": 0.409,
+            "feedback": 0.2,
+            "mix": 0.12
+          },
+          "sync": "1/8d",
+          "bpm_ref": 110
+        }
+      ],
+      "layers": [
+        {
+          "plugin": "harmony",
+          "params": {
+            "semitones": 0,
+            "formant_shift": 0.0,
+            "level_db": -9,
+            "delay_ms": 15,
+            "detune_cents": 6,
+            "width": 0.7,
+            "mix": 1.0
+          },
+          "role": "chorus_double"
+        }
+      ],
+      "palette_gaps": [],
+      "metric_signature": [
+        "pitch_cents low-medium",
+        "air_ratio_db high",
+        "reverb_tail_db medium"
+      ],
+      "notes": ""
+    }
+  ]
+}
