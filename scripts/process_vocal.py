@@ -171,9 +171,12 @@ def process_vocal(args):
         chain_config = model_chain(model_plugins, eq_bands, model_params)
     else:
         print(f"\n[*] Подбор цепочки по референсу (бюджет {args.budget:.0f} с)...")
-        result = ChainOptimizer(sr=sr).optimize(
-            y_src_chain, y_ref_full,
-            model_probs=model_probs, model_params=model_params, model_param_std=load_param_std(model_file),
+        # Старт от модели только по флагу: на настоящих парах с референсом из другой части песни подбор без
+        # нее точнее (log-mel 2.22 против 2.50 дБ, docs/research/model_v5.md) — ее EQ/компрессор раздувают низ
+        prior = dict(model_probs=model_probs, model_params=model_params,
+                     model_param_std=load_param_std(model_file)) if args.model_prior else {}
+        result = ChainOptimizer(sr=sr, metric=args.metric).optimize(
+            y_src_chain, y_ref_full, **prior,
             key_index=ref_key, scale=ref_scale,
             gate_threshold_db=gate_thresh, budget_s=args.budget, patience_renders=args.patience or None,
             allow_tune=not args.no_tune, tune_speed=args.tune_speed,
@@ -250,13 +253,17 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=str, required=True, help="Путь к вашему сухому вокалу (WAV)")
     parser.add_argument("--ref", type=str, required=True, help="Путь к референсному треку (WAV или MP3)")
     parser.add_argument("--extract-vocals", action="store_true", help="Принудительно изолировать вокал из референса через Demucs")
-    parser.add_argument("--model-path", type=str, default="data/models/v4/best_model.pth", help="Путь к весам обученной нейросети")
+    parser.add_argument("--model-path", type=str, default="data/models/v5/best_model.pth", help="Путь к весам обученной нейросети")
     parser.add_argument("--output-fst", type=str, default="data/processed/vocal_mastering.fst", help="Путь сохранения пресета FL Studio")
     parser.add_argument("--output-wav", type=str, default="data/processed/mixed_vocal_preview.wav", help="Путь сохранения WAV превью")
     parser.add_argument("--no-audio-render", action="store_true", help="Отключить генерацию WAV превью (быстрее, только .fst)")
     parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы (как при обучении)")
     parser.add_argument("--no-optimize", action="store_true", help="Использовать цепочку модели без подбора по референсу")
     parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
+    parser.add_argument("--model-prior", action="store_true",
+                        help="Начинать подбор с цепочки модели (по умолчанию подбор без нее)")
+    parser.add_argument("--metric", choices=["style", "embedding", "combined"], default="embedding",
+                        help="Метрика подбора: embedding — обученный кодировщик стиля (точнее на настоящих парах)")
     parser.add_argument("--no-tune", action="store_true",
                         help="Не добавлять автотюн (если в референсе его нет или слышны артефакты)")
     parser.add_argument("--tune-speed", type=float, default=None,
