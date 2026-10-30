@@ -35,7 +35,7 @@ PARAM_INTENSITY = {
     ("distortion", "drive_db"): 1,
     ("chorus", "depth"): 1, ("chorus", "mix"): 1, ("chorus", "feedback"): 1,
     ("stereo_enhancer", "width"): 1,
-    ("reverb", "wet_level"): 1, ("reverb", "room_size"): 1,
+    ("reverb", "wet_level"): 1, ("reverb", "room_size"): 1, ("reverb", "decay_s"): 1,
     ("delay", "mix"): 1, ("delay", "feedback"): 1,
     ("exciter", "mix"): 1,
 }
@@ -205,15 +205,21 @@ def _default_params(plugin: str) -> dict[str, float]:
     for param in PARAM_LAYOUT[plugin]:
         direction = PARAM_INTENSITY.get((plugin, param), 0)
         start[param] = 0.25 if direction > 0 else 0.75 if direction < 0 else 0.5
-    return {**start, **OPTIMIZER_EXTRA_PARAMS.get(plugin, {})}
+    return _drop_superseded(plugin, {**start, **OPTIMIZER_EXTRA_PARAMS.get(plugin, {})})
+
+
+def _drop_superseded(plugin: str, params: dict[str, float]) -> dict[str, float]:
+    """Убирает параметры, которых нет в поиске (SUPERSEDED_PARAMS): иначе старт и кандидаты CMA-ES
+    считались бы разными целевыми функциями (штраф интенсивности учитывал бы мертвый room_size)."""
+    return {k: v for k, v in params.items() if (plugin, k) not in SUPERSEDED_PARAMS}
 
 
 def _initial_params(plugin: str, model_probs: dict[str, float] | None,
                     model_params: dict[str, dict[str, float]] | None) -> dict[str, float]:
     """Стартовые нормализованные параметры: предсказание модели или мягкая середина диапазона."""
     if _uses_prior(plugin, model_probs, model_params):
-        return {**OPTIMIZER_EXTRA_PARAMS.get(plugin, {}),
-                **{k: float(np.clip(v, 0.0, 1.0)) for k, v in model_params[plugin].items()}}
+        return _drop_superseded(plugin, {**OPTIMIZER_EXTRA_PARAMS.get(plugin, {}),
+                                         **{k: float(np.clip(v, 0.0, 1.0)) for k, v in model_params[plugin].items()}})
     return _default_params(plugin)
 
 
@@ -233,9 +239,9 @@ def search_stds(layout: list[tuple[str, str]], prior_plugins: set[str],
 def _stagnated(history: list[tuple[int, float]], patience_renders: int, min_improvement: float) -> bool:
     """True, если за patience_renders последних рендеров целевая функция улучшилась меньше min_improvement."""
     renders, best = history[-1]
-    if renders < patience_renders:
+    if renders <= patience_renders:
         return False
-    before = next(value for n, value in reversed(history) if n <= renders - patience_renders)
+    before = next((value for n, value in reversed(history) if n <= renders - patience_renders), history[0][1])
     return before - best < min_improvement
 
 

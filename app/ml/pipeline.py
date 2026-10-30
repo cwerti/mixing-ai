@@ -32,8 +32,9 @@ def model_chain(plugins: list[str], eq_bands: list[tuple[float, float]],
                 model_params: dict[str, dict[str, float]]) -> ChainConfig:
     """Цепочка «как предсказала модель» (режим --no-optimize) с защитными лимитами пространственных эффектов."""
     # drive_db 0.48 = 9.6 дБ при диапазоне 0–20 дБ (тот же физический предел, что 0.35 при прежнем 4–20 дБ)
+    # wet_level 0.22 = 0.18 при диапазоне 0.06–0.60 (тот же предел, что 0.40 при прежнем 0.06–0.36)
     limits = {("chorus", "depth"): 0.20, ("distortion", "drive_db"): 0.48,
-              ("reverb", "wet_level"): 0.40, ("delay", "mix"): 0.45}
+              ("reverb", "wet_level"): 0.22, ("delay", "mix"): 0.45}
     chain = ChainConfig(plugins=[eq_plugin(eq_bands)])
     for plugin in plugins:
         params = {p: min(v, limits.get((plugin, p), 1.0)) for p, v in model_params[plugin].items()}

@@ -335,7 +335,7 @@ def write_listening(folder: Path, audio_dir: Path, case: BenchmarkCase, target: 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Бенчмарк на реальных парах dry/wet")
     parser.add_argument("--analyze", action="store_true", help="Только анализ пар (сдвиг, громкость, отличия)")
-    parser.add_argument("--model-path", default="data/models/v4/best_model.pth")
+    parser.add_argument("--model-path", default="data/models/v5/best_model.pth")
     parser.add_argument("--budget", type=float, default=60.0)
     parser.add_argument("--patience", type=int, default=60)
     parser.add_argument("--only", nargs="*", default=None, help="Прогнать только эти пары (дописать в jsonl)")

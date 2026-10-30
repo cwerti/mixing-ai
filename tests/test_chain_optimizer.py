@@ -142,3 +142,17 @@ def test_optimizer_searches_reverb_send_params_model_does_not_predict():
     assert extra <= set(_default_params("reverb"))
     model_params = {"reverb": {k: 0.5 for k in PARAM_LAYOUT["reverb"]}}
     assert extra <= set(_initial_params("reverb", {"reverb": 0.99}, model_params))
+
+
+def test_stagnated_at_exactly_patience_renders_does_not_crash():
+    from app.mixing.chain_optimizer import _stagnated
+    assert _stagnated([(1, 5.0), (10, 4.0)], 10, 0.01) is False
+    assert _stagnated([(1, 5.0), (11, 4.995)], 10, 0.01) is True
+
+
+def test_start_params_omit_superseded_room_size():
+    from app.mixing.chain_optimizer import _default_params, _initial_params
+    from app.dataset.dataset_schema import PARAM_LAYOUT
+    model_params = {"reverb": {k: 0.5 for k in PARAM_LAYOUT["reverb"]}}
+    assert "room_size" not in _default_params("reverb")
+    assert "room_size" not in _initial_params("reverb", {"reverb": 0.99}, model_params)
