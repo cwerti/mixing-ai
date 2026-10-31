@@ -104,7 +104,8 @@ class DSPEngine:
                 clamped_params["drive_db"] = min(clamped_params["drive_db"], 0.52)
         elif name == "reverb":
             if "wet_level" in clamped_params:
-                clamped_params["wet_level"] = min(clamped_params["wet_level"], 0.22)
+                # 0.12 при диапазоне 0.06–0.60 — те же 0.126, что 0.22 при прежнем 0.06–0.36
+                clamped_params["wet_level"] = min(clamped_params["wet_level"], 0.12)
         elif name == "delay":
             if "mix" in clamped_params:
                 clamped_params["mix"] = min(clamped_params["mix"], 0.20)
@@ -166,7 +167,8 @@ class DSPEngine:
         gate_threshold_db: float = None,
         target_key_index: int = None,
         target_scale: str = None,
-        apply_safety_clamps: bool = False
+        apply_safety_clamps: bool = False,
+        final_limiter: bool = True
     ) -> np.ndarray:
         """
         Применяет последовательную цепочку плагинов к аудиосигналу.
@@ -180,6 +182,8 @@ class DSPEngine:
             target_scale: Лад ('major' или 'minor') для Pitch Corrector.
             apply_safety_clamps: Применять ли дополнительное ограничение параметров (по умолчанию False,
                 чтобы при генерации датасета звук на 100% соответствовал метке).
+            final_limiter: Ставить ли выходной лимитер −1 дБ. Выключается, когда цепочка рендерится по частям
+                (app/audio/effect_variants.py), — там лимитер один, в самом конце.
             
         Returns:
             np.ndarray: Обработанный аудиосигнал.
@@ -505,15 +509,16 @@ class DSPEngine:
                     mix=phys.get("mix", 0.1)
                 ))
                 
-        # Всегда добавляем лимитер в самый конец цепочки,
-        # чтобы предотвратить цифровой клиппинг
-        effects.append(Limiter(threshold_db=-1.0, release_ms=10.0))
-        
-        board = Pedalboard(effects)
-        try:
-            y_working = board(y_working, sr)
-        except Exception as e:
-            print(f"[-] Ошибка обработки Pedalboard на выходе: {e}")
+        # Лимитер в самом конце цепочки, чтобы предотвратить цифровой клиппинг
+        if final_limiter:
+            effects.append(Limiter(threshold_db=-1.0, release_ms=10.0))
+
+        if effects:
+            board = Pedalboard(effects)
+            try:
+                y_working = board(y_working, sr)
+            except Exception as e:
+                print(f"[-] Ошибка обработки Pedalboard на выходе: {e}")
             
         # Применение гармонического экситера (если плагин присутствует в цепочке)
         for plugin in chain_config.plugins:

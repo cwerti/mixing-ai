@@ -19,7 +19,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 # Добавление корня проекта в пути импорта Python
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
-from app.dataset.dataset_schema import CHAIN_ORDER, model_param_ranges
+from app.dataset.dataset_schema import CHAIN_ORDER, dataset_param_ranges
 from app.ml.dataset import MixingAIDataset
 from app.ml.model import MixingAIModel, compute_multitask_loss
 
@@ -88,6 +88,13 @@ def train(args):
     tb_writer = SummaryWriter(log_dir=str(tb_dir))
 
     # Загрузка train и val сплитов без утечки вокалистов
+    # Диапазоны берутся из датасета, а не из текущей схемы: схема могла поменяться после генерации
+    param_ranges, ranges_source = dataset_param_ranges(args.dataset_dir)
+    if ranges_source == "schema":
+        print("[!] В stats.json датасета нет param_ranges: в чекпоинт записываются текущие диапазоны схемы. "
+              "Если DATAGEN_PLUGINS менялся после генерации, предсказания будут пересчитаны неверно.")
+    else:
+        print(f"[*] Диапазоны параметров: {ranges_source}")
     train_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="train", augment=True)
     val_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="val", augment=False)
 
@@ -264,7 +271,7 @@ def train(args):
                 "val_macro_f1": val_macro_f1,
                 "val_mae": val_mae,
                 # Диапазоны, в которых нормализованы параметры (MixingAIMLPipeline пересчитывает их в текущие)
-                "param_ranges": model_param_ranges(),
+                "param_ranges": param_ranges,
                 "dataset_dir": str(args.dataset_dir),
                 "pos_weight_mode": args.pos_weight
             }, best_model_path)
@@ -281,7 +288,7 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Обучение гибридной модели Mixing-AI v2")
-    parser.add_argument("--dataset-dir", type=str, default="data/processed/dataset_v1", help="Путь к датасету")
+    parser.add_argument("--dataset-dir", type=str, default="data/processed/dataset_v5", help="Путь к датасету")
     parser.add_argument("--save-dir", type=str, default="data/models", help="Папка сохранения модели")
     parser.add_argument("--epochs", type=int, default=35, help="Количество эпох")
     parser.add_argument("--patience", type=int, default=8, help="Терпение ранней остановки")

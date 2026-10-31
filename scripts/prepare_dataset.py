@@ -18,7 +18,7 @@ from app.dataset.dataset_generator import DatasetGenerator
 def main():
     parser = argparse.ArgumentParser(description="Генератор датасета вокала для Mixing-AI (на базе Cambridge MT / VCTK)")
     parser.add_argument("--max-samples", type=int, default=5000, help="Максимальное количество генерируемых сэмплов")
-    parser.add_argument("--output-dir", type=str, default="data/processed/dataset_v1", help="Папка сохранения датасета")
+    parser.add_argument("--output-dir", type=str, default="data/processed/dataset_v6", help="Папка сохранения датасета")
     parser.add_argument("--vctk-dir", type=str, default=None, help="Путь к локальной папке датасета VCTK (опционально)")
     parser.add_argument("--vctk-limit", type=int, default=10, help="Лимит нарезаемых файлов VCTK")
     parser.add_argument("--cross-ratio", type=float, default=1.0,
@@ -31,6 +31,12 @@ def main():
                         help="Доля референсов с даблами/гармониями (только рендер, без метки)")
     parser.add_argument("--include-test-songs", action="store_true",
                         help="Не исключать песни реальных тестовых пар (поведение до dataset_v4)")
+    parser.add_argument("--workers", type=int, default=None, help="Число процессов (по умолчанию все ядра)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Дописать прерванную генерацию (сэмплы из index.jsonl пропускаются)")
+    parser.add_argument("--domain-rand", type=float, default=None, metavar="OWN_PROB",
+                        help="Доменная рандомизация рендера референса (dataset_v5): доля плагинов нашей "
+                             "реализации, например 0.35 (app/audio/effect_variants.py). Без флага — как раньше")
 
     args = parser.parse_args()
 
@@ -73,7 +79,8 @@ def main():
     generator = DatasetGenerator(dry_dir=raw_dry_dir, output_dir=output_dir, sr=44100)
     generator.generate(max_samples=args.max_samples, save_all_wav=args.save_all_wav,
                        cross_ratio=args.cross_ratio, seed=args.seed, prior=args.prior,
-                       harmony_ratio=args.harmony_ratio, exclude_test_songs=not args.include_test_songs)
+                       harmony_ratio=args.harmony_ratio, exclude_test_songs=not args.include_test_songs,
+                       domain_rand_own_prob=args.domain_rand, workers=args.workers, resume=args.resume)
 
 
 if __name__ == "__main__":

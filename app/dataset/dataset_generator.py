@@ -10,8 +10,8 @@ from pathlib import Path
 from tqdm import tqdm
 
 from app.dataset.dataset_schema import (
-    DatasetSample, ChainConfig, PluginConfig, CHAIN_ORDER, DATAGEN_PLUGINS,
-    PARAM_LAYOUT, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH, RENDER_ORDER
+    DatasetSample, ChainConfig, PluginConfig, CHAIN_ORDER, DATAGEN_PLUGINS, LEGACY_PARAM_RANGES,
+    PARAM_LAYOUT, PARAM_OFFSETS, PARAMETER_VECTOR_LENGTH, RENDER_ORDER, model_param_ranges
 )
 from app.audio.dsp_engine import DSPEngine
 from app.audio.audio_processor import AudioProcessor
@@ -59,6 +59,22 @@ def _is_audio_file(path: Path) -> bool:
         return not path.name.startswith("._") and path.stat().st_size > 1000
     except OSError:
         return False
+
+
+def _legacy_reverb_norm(param: str, value: float) -> float:
+    """
+    Нормализованное значение реверба, заданное в прежних диапазонах (wet_level 0.06–0.36, room_size 0.15–0.95),
+    -> в текущих DATAGEN_PLUGINS. Потолки подняли для оптимизатора (wet до 0.60, room до 0.99), а генераторы
+    сэмплируют нормализованные значения: без пересчета физический wet датасета сместился бы до ~0.57.
+    Пересчет сохраняет прежнее физическое распределение, метка — в текущих диапазонах (как и рендер).
+    """
+    lo, hi = LEGACY_PARAM_RANGES[("reverb", param)]
+    return DSPEngine.normalize_value(lo + value * (hi - lo), *DATAGEN_PLUGINS["reverb"]["params"][param])
+
+
+# Стили, где иногда бывает «большой» мокрый реверб выше прежнего потолка 0.36 (эмбиент-вокал pluggnb/rage/hyperpop)
+_BIG_REVERB_STYLES = ("pluggnb_rnb", "rage", "hyperpop")
+_BIG_REVERB_PROB = 0.12
 
 
 def _generate_balanced_random_config(rng: random.Random = random) -> ChainConfig:
@@ -172,9 +188,10 @@ def _generate_balanced_random_config(rng: random.Random = random) -> ChainConfig
             damp_val = float(rng.uniform(0.08, 0.92))
             # Dry-уровень физически связан с Wet-уровнем (баланс Dry/Wet), чтобы избежать вырождения при нормализации
             dry_val = float(np.clip(0.95 - 0.65 * wet_val + rng.uniform(-0.08, 0.08), 0.0, 1.0))
-            params["room_size"] = room_val
+            # wet/room сэмплируются в прежних диапазонах (физическое распределение как у dataset_v3)
+            params["room_size"] = _legacy_reverb_norm("room_size", room_val)
             params["damping"] = damp_val
-            params["wet_level"] = wet_val
+            params["wet_level"] = _legacy_reverb_norm("wet_level", wet_val)
             params["dry_level"] = dry_val
         elif name == "delay":
             dly_sec = float(rng.uniform(0.05, 0.95))
@@ -323,8 +340,13 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
         else:
             # Длинный (2.3–4 с) и темный (срез верха 6–8 кГц) реверб: большая комната, высокое затухание
             room, damp = u(0.5, 0.95), u(0.55, 0.95)
-        return {"room_size": room, "damping": damp, "wet_level": wet,
-                "dry_level": float(np.clip(0.95 - 0.65 * wet + u(-0.08, 0.08), 0.0, 1.0))}
+        dry = float(np.clip(0.95 - 0.65 * wet + u(-0.08, 0.08), 0.0, 1.0))
+        # Физически как в dataset_v4 (wet 0.08–0.35, room 0.15–0.95), иногда в «больших» стилях — wet 0.36–0.55
+        wet_norm = _legacy_reverb_norm("wet_level", wet)
+        if style in _BIG_REVERB_STYLES and rng.random() < _BIG_REVERB_PROB:
+            wet_norm = DSPEngine.normalize_value(u(0.36, 0.55), *DATAGEN_PLUGINS["reverb"]["params"]["wet_level"])
+        return {"room_size": _legacy_reverb_norm("room_size", room), "damping": damp, "wet_level": wet_norm,
+                "dry_level": dry}
     if name == "delay":
         lo, hi = DATAGEN_PLUGINS["delay"]["params"]["delay_seconds"]
         if covered:
@@ -487,7 +509,8 @@ class DatasetGenerator:
 
     def generate(self, max_samples: int = 1000, sc_ratio: float = 0.0, save_all_wav: bool = False,
                  cross_ratio: float = 1.0, seed: int = 0, prior: str = "realistic", harmony_ratio: float = 0.35,
-                 exclude_test_songs: bool = True) -> List[DatasetSample]:
+                 exclude_test_songs: bool = True, domain_rand_own_prob: float | None = None,
+                 workers: int | None = None, resume: bool = False) -> List[DatasetSample]:
         """
         Запускает параллельную генерацию датасета на всех ядрах CPU (без использования SoundCloud).
 
@@ -499,6 +522,14 @@ class DatasetGenerator:
                 "balanced" (dataset_v3, ~50 % на эффект).
             harmony_ratio: Доля референсов с даблами/гармониями (рендер-плагин harmony, без метки).
             exclude_test_songs: Не брать песни реальных тестовых пар (TEST_SONG_PREFIXES) ни в train, ни в val.
+            domain_rand_own_prob: Доменная рандомизация рендера референса (dataset_v5): None — все плагины нашим
+                DSPEngine, как раньше; число — доля плагинов, оставленных нашей реализации, остальные рендерятся
+                случайной альтернативной (app/audio/effect_variants.py). Выбор реализаций идет из отдельного
+                генератора, поэтому цепочки, файлы и сплит те же, что без рандомизации при том же seed.
+            workers: Число процессов (по умолчанию все ядра).
+            resume: Дописать прерванную генерацию: сэмплы, уже записанные в index.jsonl, пропускаются (сэмпл
+                детерминирован своим номером и seed, поэтому результат тот же, что у непрерывного прогона);
+                оборванная последняя строка отбрасывается.
         """
         if prior not in CHAIN_PRIORS:
             raise ValueError(f"Неизвестный prior цепочек: {prior}")
@@ -577,18 +608,29 @@ class DatasetGenerator:
             # Сохраняем WAV для первых 50 сэмплов (или для всех при малом тесте max_samples <= 50)
             write_wav = save_all_wav or (max_samples <= 50) or (i < 30)
             tasks.append((i, src_file, ref_file, src_type, split_name, self.sr, str(self.output_dir), write_wav,
-                          seed, prior, harmony_ratio))
+                          seed, prior, harmony_ratio, domain_rand_own_prob))
 
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
 
-        num_cores = max(1, multiprocessing.cpu_count())
-        print(f"[*] Запуск параллельной генерации {max_samples} сэмплов на {num_cores} ядрах CPU...")
+        num_cores = workers or max(1, multiprocessing.cpu_count())
 
         samples = []
         index_file = self.output_dir / "index.jsonl"
+        if resume and index_file.exists():
+            for line in index_file.read_text(encoding="utf-8").splitlines():
+                try:
+                    samples.append(DatasetSample.from_jsonl_line(line))
+                except (json.JSONDecodeError, TypeError):
+                    continue  # строка, оборванная при прерывании
+            with open(index_file, "w", encoding="utf-8", newline="\n") as f_index:
+                f_index.writelines(s.to_jsonl_line() + "\n" for s in samples)
+            done = {int(s.id) for s in samples}
+            tasks = [t for t in tasks if t[0] not in done]
+            print(f"[*] Продолжение: готово {len(done)}, осталось {len(tasks)}")
+        print(f"[*] Запуск параллельной генерации {len(tasks)} сэмплов на {num_cores} процессах...")
 
-        with open(index_file, "w", encoding="utf-8") as f_index:
+        with open(index_file, "a" if resume else "w", encoding="utf-8") as f_index:
             with ProcessPoolExecutor(max_workers=num_cores) as executor:
                 for result_line in tqdm(executor.map(_generate_sample_worker, tasks), total=len(tasks)):
                     if result_line is not None:
@@ -606,6 +648,10 @@ class DatasetGenerator:
             "harmony_ratio": harmony_ratio,
             "exclude_test_songs": list(TEST_SONG_PREFIXES) if exclude_test_songs else [],
             "with_reference_layers": sum(1 for s in samples if s.ref_layers),
+            "domain_rand_own_prob": domain_rand_own_prob,
+            # Диапазоны, в которых нормализованы метки (train_ml копирует их в чекпоинт)
+            "param_ranges": model_param_ranges(),
+            "ref_impl_counts": _impl_counts(samples),
             "chain_order": CHAIN_ORDER,
             "param_layout": PARAM_LAYOUT
         }
@@ -614,6 +660,27 @@ class DatasetGenerator:
 
         print(f"[+] Генерация датасета успешно завершена ({len(samples)} сэмплов). Сохранено в: {self.output_dir}")
         return samples
+
+
+def _impl_counts(samples: List[DatasetSample]) -> Dict[str, int]:
+    """Сколько раз каждая реализация плагина встретилась в рендерах референсов (для stats.json)."""
+    counts: Dict[str, int] = {}
+    for s in samples:
+        for impl in s.ref_impls:
+            counts[impl] = counts.get(impl, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+_VARIANTS = None
+
+
+def _effect_variants(sr: int, own_prob: float):
+    """EffectVariants процесса-воркера (банк ИХ и VST грузятся один раз на процесс)."""
+    global _VARIANTS
+    if _VARIANTS is None or _VARIANTS.own_prob != own_prob or _VARIANTS.sr != sr:
+        from app.audio.effect_variants import EffectVariants
+        _VARIANTS = EffectVariants(sr=sr, own_prob=own_prob)
+    return _VARIANTS
 
 
 def _load_chunk(path: Path, sr: int, seconds: float, rng: random.Random) -> np.ndarray:
@@ -642,7 +709,8 @@ def _generate_sample_worker(task) -> str | None:
     Исходник — фрагмент src_file, референс — цепочка, примененная к фрагменту ref_file (другой голос при
     cross-парах). Оба сигнала стерео и подготовлены так же, как на инференсе (app/ml/features.py).
     """
-    idx, src_file, ref_file, source_name, split_name, sr, output_dir_str, write_wav, seed, prior, harmony_ratio = task
+    idx, src_file, ref_file, source_name, split_name, sr, output_dir_str, write_wav, seed, prior, harmony_ratio = task[:11]
+    own_prob = task[11] if len(task) > 11 else None
 
     import warnings
     warnings.filterwarnings("ignore")
@@ -671,14 +739,21 @@ def _generate_sample_worker(task) -> str | None:
         # 3. Оффлайн-рендеринг в стерео (реверб дает ширину) БЕЗ скрытого обрезания параметров
         rand_key = rng.randint(0, 11)
         rand_scale = rng.choice(["major", "minor"])
-        y_wet = dsp.apply_chain(
-            y_ref_dry,
-            sr,
-            render_chain,
-            target_key_index=rand_key,
-            target_scale=rand_scale,
-            apply_safety_clamps=False
-        )
+        impls: List[str] = []
+        if own_prob is None:
+            y_wet = dsp.apply_chain(
+                y_ref_dry,
+                sr,
+                render_chain,
+                target_key_index=rand_key,
+                target_scale=rand_scale,
+                apply_safety_clamps=False
+            )
+        else:
+            # Отдельный генератор: остальная случайность сэмпла (и метка) та же, что без рандомизации
+            variant_rng = random.Random(200000 + seed * 1000003 + idx * 7919)
+            y_wet, impls = _effect_variants(sr, own_prob).apply_chain(
+                y_ref_dry, render_chain, variant_rng, target_key_index=rand_key, target_scale=rand_scale)
 
         # Легкая имитация полосы пропускания Demucs/MP3 на 25% тренировочных референсов (Domain Adaptation)
         y_wet_for_features = y_wet
@@ -743,7 +818,8 @@ def _generate_sample_worker(task) -> str | None:
             split=split_name,
             src_file=str(src_file),
             ref_file=str(ref_file),
-            ref_layers=[layer.params for layer in layers]
+            ref_layers=[layer.params for layer in layers],
+            ref_impls=impls
         )
         return sample.to_jsonl_line()
     except Exception as e:

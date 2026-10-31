@@ -8,6 +8,12 @@
 
 Песни реальных тестовых пар исключены (style_chains.TEST_SONG_PREFIXES).
 
+Доменная рандомизация (bank --domain-rand OWN_PROB, кодировщик v3): в каждом блоке фрагменты 0 и 2 (разные
+песни) рендерятся нашим DSPEngine, а 1 и 3 — одним и тем же случайным «профилем реализаций» цепочки
+(app/audio/effect_variants.py: другой реверб/компрессор/сатурация, параметры сопоставлены приблизительно).
+Позитивы: та же реализация на другом содержании (вес 1) и та же цепочка через другую реализацию
+(--cross-impl-weight, по умолчанию 0.5 — сопоставление параметров между реализациями приблизительное).
+
 Пример:
     python scripts/train_style_encoder.py bank --blocks 2000 --split train
     python scripts/train_style_encoder.py bank --blocks 200 --split val
@@ -67,23 +73,31 @@ def _read_excerpts(path: Path, rng: random.Random, n: int, seconds: float) -> li
 
 
 def render_chain(dsp, x: np.ndarray, chain) -> np.ndarray:
-    """apply_chain для стерео: подавление резонансов в DSPEngine работает только с моно, поэтому по каналам."""
-    from app.audio.vocal_enhancer import VocalEnhancer
-    from app.dataset.dataset_schema import ChainConfig
-    rest = [p for p in chain.plugins if p.name != "resonance_suppressor"]
-    if len(rest) != len(chain.plugins):
-        phys = dsp.get_physical_params(next(p for p in chain.plugins if p.name == "resonance_suppressor"))
-        enhancer = VocalEnhancer(sr=SR)
-        x = np.vstack([enhancer.suppress_resonances(ch, threshold_db=phys["threshold_db"],
-                                                    max_attenuation_db=phys["max_attenuation_db"])
-                       for ch in x]).astype(np.float32)
-    return dsp.apply_chain(x, SR, ChainConfig(plugins=rest))
+    """apply_chain для стерео нашим DSPEngine (см. app/eval/style_chains.render_chain)."""
+    from app.eval.style_chains import render_chain as render
+    return render(x, chain, dsp=dsp, sr=SR)
 
 
-def make_block(task: tuple[int, list[str]], keep_audio: bool = False) -> dict | None:
+# Фрагменты блока, которые при доменной рандомизации рендерятся случайным профилем реализаций (0 и 2 — нашим DSP)
+VARIANT_CONTENTS = (1, 3)
+_VARIANTS = None
+
+
+def _variants(own_prob: float):
+    global _VARIANTS
+    if _VARIANTS is None or _VARIANTS.own_prob != own_prob:
+        from app.audio.effect_variants import EffectVariants
+        _VARIANTS = EffectVariants(sr=SR, own_prob=own_prob)
+    return _VARIANTS
+
+
+def make_block(task: tuple, keep_audio: bool = False) -> dict | None:
     """
     Один блок банка: признаки 16 рендеров, метки цепочек и фрагментов, флаги плагинов
     (keep_audio — еще и сами рендеры (CHAINS, CONTENTS) для проверки других метрик).
+    task = (seed, files) или (seed, files, own_prob): own_prob задан — фрагменты VARIANT_CONTENTS рендерятся
+    одним профилем случайных реализаций на цепочку, в блоке появляется "impl" (CHAINS, CONTENTS): 0 — наш DSP,
+    1 — профиль; "impls" — какие реализации выбраны.
     """
     import warnings
     warnings.filterwarnings("ignore")
@@ -93,7 +107,8 @@ def make_block(task: tuple[int, list[str]], keep_audio: bool = False) -> dict | 
     from app.eval.style_embedding import style_features
     from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, normalize_lufs
 
-    seed, files = task
+    seed, files = task[0], task[1]
+    own_prob = task[2] if len(task) > 2 else None
     rng = random.Random(seed)
     paths = [Path(f) for f in files]
     seconds = EXCERPT_S + WARMUP_S
@@ -110,6 +125,9 @@ def make_block(task: tuple[int, list[str]], keep_audio: bool = False) -> dict | 
         return None
     contents = [normalize_lufs(x, SR, CHAIN_INPUT_LUFS + rng.uniform(-2.0, 2.0)) for x in exc + exc_b + exc_c]
     chains = [sample_realistic_chain(rng) for _ in range(CHAINS)]
+    profile_seeds = [rng.randint(0, 2 ** 31 - 1) for _ in range(CHAINS)]
+    impl = np.zeros((CHAINS, CONTENTS), dtype=np.int8)
+    impls: list[list[str]] = [[] for _ in range(CHAINS)]
     dsp = DSPEngine()
     warm = int(WARMUP_S * SR)
     audio = [[None] * CONTENTS for _ in range(CHAINS)]
@@ -119,7 +137,17 @@ def make_block(task: tuple[int, list[str]], keep_audio: bool = False) -> dict | 
     for i, chain in enumerate(chains):
         for k, x in enumerate(contents):
             with contextlib.redirect_stdout(io.StringIO()):
-                y = render_chain(dsp, x, chain)
+                if own_prob is not None and k in VARIANT_CONTENTS:
+                    # Один seed профиля на цепочку: на обоих фрагментах те же реализации и тот же разброс
+                    variants = _variants(own_prob)
+                    y = render_chain_variants(dsp, variants, x, chain, profile_seeds[i])
+                    impl[i, k] = 1
+                    if not impls[i]:
+                        r = random.Random(profile_seeds[i])
+                        impls[i] = [f"{p.name}:{variants.choose(p.name, r)}" for p in chain.plugins
+                                    if p.name != "resonance_suppressor"]
+                else:
+                    y = render_chain(dsp, x, chain)
             y = np.nan_to_num(np.asarray(y, dtype=np.float32))
             if y.ndim == 1:
                 y = np.vstack([y, y])
@@ -128,9 +156,15 @@ def make_block(task: tuple[int, list[str]], keep_audio: bool = False) -> dict | 
                 audio[i][k] = y
             f = style_features(y, SR)
             feats[i, k] = f[..., :feats.shape[-1]]
-    return {"feats": feats, "flags": np.stack([chain_flags(c) for c in chains]),
+    return {"feats": feats, "flags": np.stack([chain_flags(c) for c in chains]), "impl": impl,
             "chains": [[{"name": p.name, "params": p.params} for p in c.plugins] for c in chains],
-            "files": [str(a), str(a), str(b), str(c)], **({"audio": audio} if keep_audio else {})}
+            "impls": impls, "files": [str(a), str(a), str(b), str(c)], **({"audio": audio} if keep_audio else {})}
+
+
+def render_chain_variants(dsp, variants, x: np.ndarray, chain, profile_seed: int) -> np.ndarray:
+    """Рендер цепочки профилем случайных реализаций (seed профиля задает выбор и разброс)."""
+    from app.eval.style_chains import render_chain as render
+    return render(x, chain, dsp=dsp, variants=variants, rng=random.Random(profile_seed), sr=SR)
 
 
 def build_bank(args) -> None:
@@ -140,39 +174,56 @@ def build_bank(args) -> None:
     print(f"[*] Пул {args.split}: {len(files)} файлов; блоков {args.blocks}")
     BANK_DIR.mkdir(parents=True, exist_ok=True)
     base_seed = 1_000_000 if args.split == "val" else 0
-    tasks = [(base_seed + args.offset + i, files) for i in range(args.blocks)]
-    feats, flags, meta = [], [], []
+    tasks = [(base_seed + args.offset + i, files, args.domain_rand) for i in range(args.blocks)]
+    feats, flags, impl, meta = [], [], [], []
     started = time.perf_counter()
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         for n, block in enumerate(pool.map(make_block, tasks, chunksize=2), start=1):
             if block is not None:
                 feats.append(block["feats"])
                 flags.append(block["flags"])
-                meta.append({"chains": block["chains"], "files": block["files"]})
+                impl.append(block["impl"])
+                meta.append({"chains": block["chains"], "files": block["files"], "impls": block["impls"]})
             if n % 50 == 0:
                 print(f"    {n}/{len(tasks)} за {time.perf_counter() - started:.0f} с", flush=True)
     out = BANK_DIR / f"bank_{args.split}{args.suffix}.npz"
-    np.savez(out, feats=np.stack(feats), flags=np.stack(flags))
+    if args.split == "train":
+        # Сразу .npy для memmap (load_banks), без копии в .npz: банк 3000 блоков — 4.2 ГБ
+        out = BANK_DIR / f"bank_train{args.suffix}_feats.npy"
+        np.save(out, np.stack(feats))
+        np.save(BANK_DIR / f"bank_train{args.suffix}_flags.npy", np.stack(flags))
+        np.save(BANK_DIR / f"bank_train{args.suffix}_impl.npy", np.stack(impl))
+    else:
+        np.savez(out, feats=np.stack(feats), flags=np.stack(flags), impl=np.stack(impl))
     (BANK_DIR / f"bank_{args.split}{args.suffix}.json").write_text(json.dumps(meta, ensure_ascii=False, default=float),
                                                                   encoding="utf-8")
     print(f"[+] {out}: {len(feats)} блоков за {time.perf_counter() - started:.0f} с")
 
 
-def supcon_loss(emb, labels, temperature: float):
+def supcon_loss(emb, labels, temperature: float, impl=None, cross_impl_weight: float = 1.0):
+    """
+    Supervised Contrastive. impl (группа реализации каждого окна) — позитивы с другой реализацией той же
+    цепочки входят с весом cross_impl_weight (0 — только та же реализация).
+    """
     import torch
     sim = emb @ emb.T / temperature
     n = emb.shape[0]
     eye = torch.eye(n, dtype=torch.bool, device=emb.device)
     sim = sim.masked_fill(eye, -1e9)
-    pos = (labels[:, None] == labels[None, :]) & ~eye
+    pos = ((labels[:, None] == labels[None, :]) & ~eye).float()
+    if impl is not None and cross_impl_weight != 1.0:
+        same = (impl[:, None] == impl[None, :]).float()
+        pos = pos * (same + cross_impl_weight * (1.0 - same))
     log_prob = sim - torch.logsumexp(sim, dim=1, keepdim=True)
-    return -(log_prob * pos).sum(1).div(pos.sum(1).clamp_min(1)).mean()
+    return -(log_prob * pos).sum(1).div(pos.sum(1).clamp_min(1e-6)).mean()
 
 
-def bank_metrics(net, feats: np.ndarray, device) -> dict:
+def bank_metrics(net, feats: np.ndarray, device, impl: np.ndarray | None = None) -> dict:
     """
     На блоках: доля троек, где та же цепочка на другом фрагменте ближе, чем другая цепочка на том же фрагменте,
-    и top-1 поиска (ближайший сосед из других фрагментов — с той же цепочкой).
+    и top-1 поиска (ближайший сосед из других фрагментов — с той же цепочкой). С impl (банк с доменной
+    рандомизацией) тройки еще делятся на same_impl (якорь и позитив одной реализации) и cross_impl
+    (позитив — та же цепочка другой реализацией, как наш рендер против чужого референса в подборе).
     """
     import torch
     from app.eval.style_embedding import WINDOW_FRAMES
@@ -186,7 +237,8 @@ def bank_metrics(net, feats: np.ndarray, device) -> dict:
             embs.append(e.view(CHAINS, CONTENTS, -1).cpu().numpy())
     embs = np.stack(embs)  # (B, chains, contents, D)
     wins, total = 0, 0
-    for e in embs:
+    split = {"same_impl": [0, 0], "cross_impl": [0, 0]}
+    for b, e in enumerate(embs):
         d = 1 - np.einsum("ikd,jld->ikjl", e, e)
         for i in range(CHAINS):
             for k in range(CONTENTS):
@@ -196,8 +248,13 @@ def bank_metrics(net, feats: np.ndarray, device) -> dict:
                     for j in range(CHAINS):
                         if j == i:
                             continue
-                        wins += d[i, k, i, l] < d[i, k, j, k]
+                        win = d[i, k, i, l] < d[i, k, j, k]
+                        wins += win
                         total += 1
+                        if impl is not None:
+                            key = "same_impl" if impl[b, i, k] == impl[b, i, l] else "cross_impl"
+                            split[key][0] += win
+                            split[key][1] += 1
     flat = embs.reshape(-1, embs.shape[-1])
     blk = np.repeat(np.arange(len(embs)), CHAINS * CONTENTS)
     chain = np.tile(np.repeat(np.arange(CHAINS), CONTENTS), len(embs)) + blk * CHAINS
@@ -206,7 +263,10 @@ def bank_metrics(net, feats: np.ndarray, device) -> dict:
     sim[content[:, None] == content[None, :]] = -9  # сосед только с другого фрагмента
     top1 = float(np.mean(chain[sim.argmax(1)] == chain))
     net.train()
-    return {"triplet_acc": wins / max(total, 1), "top1": top1}
+    out = {"triplet_acc": wins / max(total, 1), "top1": top1}
+    if impl is not None and impl.any():
+        out.update({f"triplet_{k}": float(w / max(t, 1)) for k, (w, t) in split.items()})
+    return out
 
 
 def random_eq_curve(rng: np.random.Generator, n_mels: int, std_db: float) -> np.ndarray:
@@ -251,9 +311,12 @@ class _Banks:
         return np.stack([self.arrays[b][i - self.offsets[b]] for b, i in zip(bank, idx)])
 
 
-def load_banks(suffixes: list[str]) -> tuple[_Banks, np.ndarray]:
-    """Банки train: .npz при первом обращении распаковывается в .npy рядом (для memmap)."""
-    feats, flags = [], []
+def load_banks(suffixes: list[str]) -> tuple[_Banks, np.ndarray, np.ndarray]:
+    """
+    Банки train: .npz при первом обращении распаковывается в .npy рядом (для memmap). Третий элемент —
+    группы реализаций (CHAINS, CONTENTS) на блок; у банков без рандомизации — нули.
+    """
+    feats, flags, impls = [], [], []
     for suffix in suffixes:
         npy = BANK_DIR / f"bank_train{suffix}_feats.npy"
         if not npy.exists():
@@ -262,7 +325,10 @@ def load_banks(suffixes: list[str]) -> tuple[_Banks, np.ndarray]:
                 np.save(BANK_DIR / f"bank_train{suffix}_flags.npy", z["flags"])
         feats.append(np.load(npy, mmap_mode="r"))
         flags.append(np.load(BANK_DIR / f"bank_train{suffix}_flags.npy"))
-    return _Banks(feats), np.concatenate(flags)
+        impl_path = BANK_DIR / f"bank_train{suffix}_impl.npy"
+        impls.append(np.load(impl_path) if impl_path.exists()
+                     else np.zeros((len(feats[-1]), CHAINS, CONTENTS), dtype=np.int8))
+    return _Banks(feats), np.concatenate(flags), np.concatenate(impls)
 
 
 def train(args) -> None:
@@ -272,8 +338,10 @@ def train(args) -> None:
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    feats, flags = load_banks(args.train_banks)
-    val = np.load(BANK_DIR / "bank_val.npz")["feats"]
+    feats, flags, impls = load_banks(args.train_banks)
+    with np.load(BANK_DIR / f"bank_val{args.val_suffix}.npz") as z:
+        val = z["feats"]
+        val_impl = z["impl"] if "impl" in z.files else None
     print(f"[*] train {feats.shape}, val {val.shape}, устройство {device}")
 
     config = {"width": args.width, "embed_dim": args.embed_dim}
@@ -300,13 +368,15 @@ def train(args) -> None:
         # Сдвиг уровня (±1.5 дБ): устойчивость к неточному выравниванию громкости
         x += rng.uniform(-0.075, 0.075, size=(len(x), 1, 1, 1)).astype(np.float32)
         labels = np.repeat(np.arange(b * CHAINS), CONTENTS)
+        impl_t = torch.from_numpy(impls[idx].reshape(-1).astype(np.int64)).to(device)
         blk_flags = flags[idx].copy()
         blk_flags[replaced, -1] = blk_flags[replaced, 0]
         blk_flags[replaced, -1, FLAG_PLUGINS.index("eq")] = 1.0
         y_flags = np.repeat(blk_flags.reshape(b * CHAINS, -1), CONTENTS, axis=0)
         xt = torch.from_numpy(x).to(device)
         emb, logits = net(xt)
-        loss_con = supcon_loss(emb, torch.from_numpy(labels).to(device), args.temperature)
+        loss_con = supcon_loss(emb, torch.from_numpy(labels).to(device), args.temperature, impl=impl_t,
+                               cross_impl_weight=args.cross_impl_weight)
         loss_flags = bce(logits, torch.from_numpy(y_flags).to(device))
         loss = loss_con + args.flags_weight * loss_flags
         opt.zero_grad()
@@ -314,7 +384,7 @@ def train(args) -> None:
         opt.step()
         sched.step()
         if step % args.eval_every == 0 or step == steps_est or time.perf_counter() > deadline:
-            m = bank_metrics(net, val, device)
+            m = bank_metrics(net, val, device, val_impl)
             row = {"step": step, "loss": loss_con.item(), "flags": loss_flags.item(), **m,
                    "minutes": round((time.perf_counter() - deadline) / 60 + args.minutes, 1)}
             log.append(row)
@@ -339,6 +409,8 @@ if __name__ == "__main__":
     p_bank.add_argument("--workers", type=int, default=16)
     p_bank.add_argument("--offset", type=int, default=0)
     p_bank.add_argument("--suffix", default="")
+    p_bank.add_argument("--domain-rand", type=float, default=None, metavar="OWN_PROB",
+                        help="Фрагменты 1 и 3 блока — случайный профиль реализаций (доля нашей реализации OWN_PROB)")
     p_train = sub.add_parser("train")
     p_train.add_argument("--train-banks", nargs="*", default=[""])
     p_train.add_argument("--minutes", type=float, default=60.0)
@@ -354,5 +426,8 @@ if __name__ == "__main__":
     p_train.add_argument("--eq-aug", type=float, default=0.0,
                          help="Вероятность трудного негатива «та же цепочка + EQ» на блок (см. eq_hard_negatives)")
     p_train.add_argument("--out-name", default="style_encoder.pt")
+    p_train.add_argument("--val-suffix", default="", help="Банк val: bank_val{suffix}.npz")
+    p_train.add_argument("--cross-impl-weight", type=float, default=0.5,
+                         help="Вес позитивов «та же цепочка, другая реализация» в SupCon (1 — как обычные)")
     parsed = parser.parse_args()
     build_bank(parsed) if parsed.cmd == "bank" else train(parsed)

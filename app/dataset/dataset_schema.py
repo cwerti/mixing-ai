@@ -219,6 +219,30 @@ def model_param_ranges() -> Dict[str, Dict[str, List[float]]]:
     return {name: {p: list(DATAGEN_PLUGINS[name]["params"][p]) for p in layout} for name, layout in PARAM_LAYOUT.items()}
 
 
+# dataset_v4 сгенерирован до подъема потолков реверба (wet_level 0.06–0.36, room_size 0.15–0.95), но уже с
+# диапазонами drive/chorus.mix модели v5; в его stats.json диапазоны не записаны
+DATASET_V4_PARAM_RANGES = {name: {p: list(LEGACY_PARAM_RANGES[(name, p)]) if name == "reverb" and
+                                  (name, p) in LEGACY_PARAM_RANGES else list(DATAGEN_PLUGINS[name]["params"][p])
+                                  for p in layout} for name, layout in PARAM_LAYOUT.items()}
+
+
+def dataset_param_ranges(dataset_dir) -> tuple[Dict[str, Dict[str, List[float]]], str]:
+    """
+    Диапазоны, в которых нормализованы метки датасета: stats.json["param_ranges"] (пишется генератором с
+    датасета v5); для dataset_v4 — DATASET_V4_PARAM_RANGES; иначе — текущие (источник "schema", с этим нужно
+    предупреждение: если схема менялась после генерации, чекпоинт сохранит неверные диапазоны).
+    """
+    from pathlib import Path
+    stats_path = Path(dataset_dir) / "stats.json"
+    if stats_path.exists():
+        stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        if "param_ranges" in stats:
+            return stats["param_ranges"], "stats.json"
+    if Path(dataset_dir).name == "dataset_v4":
+        return DATASET_V4_PARAM_RANGES, "dataset_v4 (до подъема потолков реверба)"
+    return model_param_ranges(), "schema"
+
+
 def remap_param_vector(vec, ranges: Dict[str, Dict[str, List[float]]] | None):
     """
     Переводит нормализованный вектор параметров модели из диапазонов, в которых она обучена, в текущие
@@ -268,6 +292,9 @@ class DatasetSample:
     # Слои harmony (даблы/гармонии), добавленные только в рендер референса: в метку модели не входят
     # (нормализованные параметры, как у DATAGEN_PLUGINS["harmony"]; у датасетов до v4 поля нет)
     ref_layers: List[Dict[str, float]] = field(default_factory=list)
+    # Реализации плагинов в рендере референса при доменной рандомизации ("плагин:реализация",
+    # app/audio/effect_variants.py); пусто — все плагины нашим DSPEngine (датасеты до v5)
+    ref_impls: List[str] = field(default_factory=list)
 
     def to_jsonl_line(self) -> str:
         """Сериализует объект сэмпла в строку JSONL."""

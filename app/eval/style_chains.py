@@ -206,6 +206,31 @@ def archetype_chain(name: str, rng: random.Random | None = None) -> ChainConfig:
     return ChainConfig(plugins=plugins)
 
 
+def render_chain(x: np.ndarray, chain: ChainConfig, dsp: DSPEngine | None = None, variants=None,
+                 rng: random.Random | None = None, sr: int = 44100) -> np.ndarray:
+    """
+    Рендер цепочки кодировщика для стерео x (2, N). Подавление резонансов DSPEngine работает только с моно,
+    поэтому оно применяется по каналам до остальной цепочки.
+
+    Args:
+        variants: EffectVariants (app/audio/effect_variants.py) — доменная рандомизация: остальная цепочка
+            рендерится случайными реализациями эффектов (выбор задает rng; один и тот же seed дает ту же
+            реализацию на любом содержании). None — нашим DSPEngine, как у оптимизатора.
+    """
+    from app.audio.vocal_enhancer import VocalEnhancer
+    dsp = dsp or DSPEngine()
+    rest = [p for p in chain.plugins if p.name != "resonance_suppressor"]
+    if len(rest) != len(chain.plugins):
+        phys = dsp.get_physical_params(next(p for p in chain.plugins if p.name == "resonance_suppressor"))
+        enhancer = VocalEnhancer(sr=sr)
+        x = np.vstack([enhancer.suppress_resonances(ch, threshold_db=phys["threshold_db"],
+                                                    max_attenuation_db=phys["max_attenuation_db"])
+                       for ch in x]).astype(np.float32)
+    if variants is None:
+        return dsp.apply_chain(x, sr, ChainConfig(plugins=rest))
+    return variants.apply_chain(x, ChainConfig(plugins=rest), rng or random.Random(0))[0]
+
+
 def chain_flags(chain: ChainConfig) -> np.ndarray:
     """Какие типы плагинов есть в цепочке (вспомогательная цель обучения)."""
     return np.array([float(any(p.name == name for p in chain.plugins)) for name in FLAG_PLUGINS], dtype=np.float32)
