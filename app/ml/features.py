@@ -14,6 +14,8 @@ MODEL_LUFS = -23.0
 MEL_HOP = 512
 N_MELS = 128
 DEFAULT_MAX_LEN = 520
+# pyloudnorm меряет громкость блоками по 0.4 с: более короткий сигнал дополняется тишиной до этой длины
+MIN_LOUDNESS_SECONDS = 0.5
 
 
 def window_seconds(sr: int, max_len: int = DEFAULT_MAX_LEN) -> float:
@@ -26,6 +28,9 @@ def prepare_model_audio(y: np.ndarray, sr: int, max_len: int = DEFAULT_MAX_LEN) 
     y = to_stereo(y)
     _, (start, end) = librosa.effects.trim(librosa.to_mono(y), top_db=60.0)
     y = select_excerpt(y[:, start:end], sr, window_seconds(sr, max_len))
+    min_samples = int(MIN_LOUDNESS_SECONDS * sr)
+    if y.shape[-1] < min_samples:
+        y = np.pad(y, ((0, 0), (0, min_samples - y.shape[-1])))
     return normalize_lufs(y, sr, MODEL_LUFS)
 
 

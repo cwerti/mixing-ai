@@ -20,7 +20,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
 from app.dataset.dataset_schema import CHAIN_ORDER, dataset_param_ranges
-from app.ml.dataset import MixingAIDataset
+from app.ml.dataset import MixingAIDataset, has_split
 from app.ml.model import MixingAIModel, compute_multitask_loss
 
 
@@ -95,19 +95,18 @@ def train(args):
               "Если DATAGEN_PLUGINS менялся после генерации, предсказания будут пересчитаны неверно.")
     else:
         print(f"[*] Диапазоны параметров: {ranges_source}")
-    train_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="train", augment=True)
-    val_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="val", augment=False)
-
-    # Откат к random_split только если датасет старого образца без разметки split="val"
-    if len(val_set) == len(train_set) and all(s.get("split", "train") == "train" for s in train_set.samples):
+    if has_split(args.dataset_dir, "val"):
+        train_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="train", augment=True)
+        val_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="val", augment=False)
+        pos_weight = compute_class_pos_weights(train_set.samples, device)
+    else:
+        # Датасет старого образца без разметки split="val": случайное разбиение 85/15
         full_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="all", augment=False)
         train_size = int(0.85 * len(full_set))
         val_size = len(full_set) - train_size
         generator = torch.Generator().manual_seed(42)
         train_set, val_set = random_split(full_set, [train_size, val_size], generator=generator)
         pos_weight = compute_class_pos_weights(full_set.samples, device)
-    else:
-        pos_weight = compute_class_pos_weights(train_set.samples, device)
     if args.pos_weight == "none":
         # Частоты эффектов в датасете уже реалистичные (dataset_v4+): балансировка N_neg/N_pos (до 3x) вернула бы
         # редким chorus/distortion эффективную априорную частоту ~0.4–0.5 и с ней лишние ложные включения

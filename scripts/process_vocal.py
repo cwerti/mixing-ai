@@ -27,7 +27,8 @@ from app.dataset.dataset_schema import (
 )
 from app.eval.style_metrics import extract_style_features, style_distance
 from app.mixing.chain_optimizer import CHAIN_INPUT_LUFS, ChainOptimizer, normalize_lufs, to_stereo
-from app.ml.model import MixingAIModel
+from app.audio.input_check import AudioInputError, load_checked_audio
+from app.ml.checkpoint import CheckpointMismatchError, load_model
 from app.ml.features import model_inputs
 from app.ml.pipeline import load_param_std, model_chain, model_params_by_plugin
 from app.presets.full_preset_generator import FullPresetGenerator
@@ -100,6 +101,14 @@ def process_vocal(args):
         print(f"[-] Ошибка: Файл весов модели не найден: {model_file}")
         sys.exit(1)
 
+    # Исходник проверяется до Demucs и анализа: короткий, тихий или битый файл — понятное сообщение без трассировки
+    sr = 44100
+    try:
+        y_src_raw = load_checked_audio(source_file, sr, "Исходный вокал")
+    except AudioInputError as e:
+        print(f"[-] Ошибка: {e}")
+        sys.exit(1)
+
     temp_dir = Path("data/raw/temp_user_processing")
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -108,6 +117,11 @@ def process_vocal(args):
     if args.extract_vocals or ref_file.suffix.lower() in [".mp3", ".m4a", ".flac"]:
         print(f"[*] Референс определен как полный микс/песня ({ref_file.name}).")
         ref_vocal_path = extract_vocal_stem(ref_file, temp_dir / "demucs_ref")
+    try:
+        y_ref_raw = load_checked_audio(ref_vocal_path, sr, "Референс")
+    except AudioInputError as e:
+        print(f"[-] Ошибка: {e}")
+        sys.exit(1)
 
     print(f"\n[+] Исходный сухой вокал: {source_file}")
     print(f"[+] Референс для сведения: {ref_vocal_path}")
@@ -118,7 +132,6 @@ def process_vocal(args):
     enhancer = VocalEnhancer(sr=44100)
 
     print("\n[*] Загрузка и анализ аудиосигналов...")
-    sr = processor.sr
     y_ref_norm = processor.load_audio(ref_vocal_path, target_lufs=-23.0, trim_silence=True)
 
     # Детекция тональности референса
@@ -128,21 +141,18 @@ def process_vocal(args):
 
     # 3. Входы модели: стерео Mid/Side мел-спектрограммы и 18 DSP-дескрипторов громкого фрагмента
     #    (та же подготовка, что в генераторе датасета)
-    x_spec, x_desc = model_inputs(librosa.load(source_file, sr=sr, mono=False)[0],
-                                  librosa.load(ref_vocal_path, sr=sr, mono=False)[0], processor, args.max_len)
+    x_spec, x_desc = model_inputs(y_src_raw, y_ref_raw, processor, args.max_len)
     x_spec_tensor = torch.from_numpy(x_spec).unsqueeze(0)
     x_desc_tensor = torch.from_numpy(x_desc).unsqueeze(0)
 
     # 4. Загрузка нейросети на GPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] Запуск двухвходового инференса модели (Source + Ref) на {str(device).upper()}...")
-    model = MixingAIModel().to(device)
-    checkpoint = torch.load(model_file, map_location=device)
-    state_dict = checkpoint["model_state_dict"]
-    model_dict = model.state_dict()
-    model_dict.update({k: v for k, v in state_dict.items() if k in model_dict and model_dict[k].shape == v.shape})
-    model.load_state_dict(model_dict)
-    model.eval()
+    try:
+        model, checkpoint = load_model(model_file, device)
+    except CheckpointMismatchError as e:
+        print(f"[-] Ошибка: {e}")
+        sys.exit(1)
 
     with torch.no_grad():
         x_spec_tensor = x_spec_tensor.to(device)
@@ -159,8 +169,8 @@ def process_vocal(args):
 
     # 5. Сухой вокал подается в цепочку на том же уровне, что и при генерации датасета:
     # пороги компрессора, де-эссера и дисторшна в DATAGEN_PLUGINS рассчитаны на -23 LUFS
-    y_src_chain = normalize_lufs(to_stereo(librosa.load(source_file, sr=sr, mono=False)[0]), sr, CHAIN_INPUT_LUFS)
-    y_ref_full, _ = librosa.load(ref_vocal_path, sr=sr, mono=False)
+    y_src_chain = normalize_lufs(to_stereo(y_src_raw), sr, CHAIN_INPUT_LUFS)
+    y_ref_full = y_ref_raw
     gate_thresh = processor.estimate_noise_gate_threshold(librosa.to_mono(y_src_chain))
     print(f"[+] Оптимальный порог Noise Gate: {gate_thresh:.1f} дБ")
 
@@ -170,10 +180,11 @@ def process_vocal(args):
         chain_config = model_chain(model_plugins, eq_bands, model_params)
     else:
         print(f"\n[*] Подбор цепочки по референсу (бюджет {args.budget:.0f} с)...")
-        # Старт от модели только по флагу: на настоящих парах с референсом из другой части песни подбор без
-        # нее точнее (log-mel 2.22 против 2.50 дБ, docs/research/model_v5.md) — ее EQ/компрессор раздувают низ
+        # Старт от модели v6 (доменная рандомизация): на настоящих парах с референсом из другой части песни
+        # модель + подбор точнее подбора без нее (log-mel 2.18 против 2.58 дБ, docs/research/domain_randomization.md).
+        # У v5 было наоборот — для нее нужен --no-model-prior.
         prior = dict(model_probs=model_probs, model_params=model_params,
-                     model_param_std=load_param_std(model_file)) if args.model_prior else {}
+                     model_param_std=load_param_std(model_file)) if not args.no_model_prior else {}
         result = ChainOptimizer(sr=sr, metric=args.metric).optimize(
             y_src_chain, y_ref_full, **prior,
             key_index=ref_key, scale=ref_scale,
@@ -248,15 +259,15 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=str, required=True, help="Путь к вашему сухому вокалу (WAV)")
     parser.add_argument("--ref", type=str, required=True, help="Путь к референсному треку (WAV или MP3)")
     parser.add_argument("--extract-vocals", action="store_true", help="Принудительно изолировать вокал из референса через Demucs")
-    parser.add_argument("--model-path", type=str, default="data/models/v5/best_model.pth", help="Путь к весам обученной нейросети")
+    parser.add_argument("--model-path", type=str, default="data/models/v6/best_model.pth", help="Путь к весам обученной нейросети")
     parser.add_argument("--output-fst", type=str, default="data/processed/vocal_mastering.fst", help="Путь сохранения пресета FL Studio")
     parser.add_argument("--output-wav", type=str, default="data/processed/mixed_vocal_preview.wav", help="Путь сохранения WAV превью")
     parser.add_argument("--no-audio-render", action="store_true", help="Отключить генерацию WAV превью (быстрее, только .fst)")
     parser.add_argument("--max-len", type=int, default=520, help="Длина мел-спектрограммы (как при обучении)")
     parser.add_argument("--no-optimize", action="store_true", help="Использовать цепочку модели без подбора по референсу")
     parser.add_argument("--budget", type=float, default=60.0, help="Время на подбор параметров, секунд")
-    parser.add_argument("--model-prior", action="store_true",
-                        help="Начинать подбор с цепочки модели (по умолчанию подбор без нее)")
+    parser.add_argument("--no-model-prior", action="store_true",
+                        help="Подбор без старта от цепочки модели (точнее для моделей до v6)")
     parser.add_argument("--metric", choices=["style", "embedding", "combined", "embedding_tail"], default="embedding",
                         help="Метрика подбора: embedding — обученный кодировщик стиля (точнее на настоящих парах)")
     parser.add_argument("--no-tune", action="store_true",

@@ -18,7 +18,8 @@ DEFAULT_MODEL_PATH = ROOT_DIR / "data" / "models" / "v4" / "best_model.pth"
 from app.audio.audio_processor import AudioProcessor
 from app.audio.dsp_engine import DSPEngine
 from app.audio.vocal_enhancer import VocalEnhancer
-from app.ml.model import MixingAIModel
+from app.audio.input_check import load_checked_audio
+from app.ml.checkpoint import load_model
 from app.presets.preset_generator import PresetGenerator
 from app.presets.full_preset_generator import FullPresetGenerator
 from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, PLUGIN_ON_PROB, remap_param_vector
@@ -346,8 +347,11 @@ class AnalysisThread(QThread):
             dsp = DSPEngine()
             
             self.progress.emit("Загрузка и подготовка аудио...")
-            y_src, _ = librosa.load(self.source, sr=44100)
-            y_ref, _ = librosa.load(self.ref, sr=44100)
+            # Короткий, тихий или битый файл — AudioInputError с понятным текстом, его покажет on_finished
+            y_src_raw = load_checked_audio(self.source, 44100, "Исходный вокал")
+            y_ref_raw = load_checked_audio(self.ref, 44100, "Референс")
+            y_src = librosa.to_mono(y_src_raw)
+            y_ref = librosa.to_mono(y_ref_raw)
             
             # Нормализация громкости и удаление тишины для корректной АЧХ
             y_src_norm = processor.load_audio(self.source, target_lufs=-23.0, trim_silence=True)
@@ -356,28 +360,13 @@ class AnalysisThread(QThread):
             self.progress.emit("Анализ спектра и физических DSP-дескрипторов...")
             from app.ml.features import model_inputs
 
-            x_spec, x_desc = model_inputs(librosa.load(self.source, sr=44100, mono=False)[0],
-                                          librosa.load(self.ref, sr=44100, mono=False)[0], processor)
+            x_spec, x_desc = model_inputs(y_src_raw, y_ref_raw, processor)
             x_tensor = torch.from_numpy(x_spec).unsqueeze(0)
             x_desc_tensor = torch.from_numpy(x_desc).unsqueeze(0)
 
             self.progress.emit("Инференс нейросети (Mixing-AI v2 Dual-Input)...")
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model = MixingAIModel().to(device)
-
-            checkpoint = torch.load(self.model_path, map_location=device)
-            state_dict = checkpoint["model_state_dict"]
-            model_dict = model.state_dict()
-
-            filtered_dict = {}
-            for k, v in state_dict.items():
-                if k in model_dict and model_dict[k].shape == v.shape:
-                    filtered_dict[k] = v
-                else:
-                    print(f"[!] Предупреждение: Несовпадение размерностей для слоя {k}, пропуск.")
-            model_dict.update(filtered_dict)
-            model.load_state_dict(model_dict)
-            model.eval()
+            model, checkpoint = load_model(self.model_path, device)
 
             with torch.no_grad():
                 x_tensor = x_tensor.to(device)

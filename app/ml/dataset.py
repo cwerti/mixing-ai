@@ -11,6 +11,12 @@ from app.dataset.dataset_schema import (
 from app.ml.features import build_model_inputs
 
 
+def has_split(dataset_dir: str | Path, split: str) -> bool:
+    """Есть ли в index.jsonl датасета хотя бы один сэмпл с этим split (без поля split сэмпл считается train)."""
+    with open(Path(dataset_dir) / "index.jsonl", "r", encoding="utf-8") as f:
+        return any(json.loads(line).get("split", "train") == split for line in f if line.strip())
+
+
 class MixingAIDataset(Dataset):
     """
     Датасет PyTorch для Mixing-AI v2 (Source + Reference Dual-Input).
@@ -53,9 +59,14 @@ class MixingAIDataset(Dataset):
                     all_loaded.append(item)
 
         if split in ("train", "val"):
-            filtered = [s for s in all_loaded if s.get("split", "train") == split]
-            # Если датасет крошечный (например, в юнит-тесте на 3 сэмпла), отдаем все элементы
-            self.samples = filtered if len(filtered) > 0 else all_loaded
+            self.samples = [s for s in all_loaded if s.get("split", "train") == split]
+            # Раньше здесь отдавался весь датасет — валидация молча шла на обучающих данных
+            if not self.samples:
+                raise ValueError(
+                    f"В датасете {self.dataset_dir} нет сэмплов со split=\"{split}\". "
+                    f"Проверьте разметку index.jsonl или используйте split=\"all\" с random_split "
+                    f"(наличие выборки проверяет has_split)."
+                )
         else:
             self.samples = all_loaded
 

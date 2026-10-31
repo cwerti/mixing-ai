@@ -2,7 +2,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-import librosa
 import torch
 import numpy as np
 
@@ -14,9 +13,10 @@ from app.dataset.dataset_schema import (
     CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS, DATAGEN_PLUGINS, PLUGIN_ON_PROB, ChainConfig, PluginConfig,
     remap_param_vector
 )
+from app.audio.input_check import load_checked_audio
 from app.mixing.chain_optimizer import eq_plugin
+from app.ml.checkpoint import load_model
 from app.ml.features import model_inputs
-from app.ml.model import MixingAIModel
 from app.presets.full_preset_generator import FullPresetGenerator
 
 
@@ -68,18 +68,7 @@ class MixingAIMLPipeline:
         self.processor = AudioProcessor(sr=44100)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = MixingAIModel().to(self.device)
-        checkpoint = torch.load(model_path, map_location=self.device)
-        state_dict = checkpoint["model_state_dict"]
-        model_dict = self.model.state_dict()
-
-        filtered_dict = {
-            k: v for k, v in state_dict.items()
-            if k in model_dict and model_dict[k].shape == v.shape
-        }
-        model_dict.update(filtered_dict)
-        self.model.load_state_dict(model_dict)
-        self.model.eval()
+        self.model, checkpoint = load_model(model_path, self.device)
         self.param_std = load_param_std(model_path)
         # Диапазоны параметров, в которых обучен чекпоинт (нет у v4 и старше — тогда LEGACY_PARAM_RANGES)
         self.param_ranges = checkpoint.get("param_ranges")
@@ -120,12 +109,14 @@ class MixingAIMLPipeline:
 
     def run(self, source_path: str | Path, ref_path: str | Path, output_preset_name: str = "mixing_ai_predicted.fst") -> Path | None:
         print(f"\n[*] Запуск инференса модели для:\n  Dry: {source_path}\n  Ref: {ref_path}")
+        # Проверка до тяжелой обработки: короткий, тихий или битый файл — понятная AudioInputError
+        y_src_raw = load_checked_audio(source_path, self.processor.sr, "Исходный вокал")
+        y_ref_raw = load_checked_audio(ref_path, self.processor.sr, "Референс")
 
         y_src = self.processor.load_audio(source_path, target_lufs=-23.0, trim_silence=True)
         y_ref = self.processor.load_audio(ref_path, target_lufs=-23.0, trim_silence=True)
 
-        active_plugins, _, pred_params_vec = self.predict(librosa.load(source_path, sr=self.processor.sr, mono=False)[0],
-                                                          librosa.load(ref_path, sr=self.processor.sr, mono=False)[0])
+        active_plugins, _, pred_params_vec = self.predict(y_src_raw, y_ref_raw)
         print(f"[+] Распознанные активные плагины (вероятность > 50%): {active_plugins}")
 
         matcher = SpectralMatcher(sr=self.processor.sr)

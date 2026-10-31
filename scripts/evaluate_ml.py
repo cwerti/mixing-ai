@@ -14,7 +14,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 # Добавление корня проекта в пути импорта Python
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
-from app.ml.dataset import MixingAIDataset
+from app.ml.dataset import MixingAIDataset, has_split
 from app.ml.model import MixingAIModel
 from app.dataset.dataset_schema import CHAIN_ORDER, PARAM_LAYOUT, PARAM_OFFSETS
 
@@ -33,8 +33,10 @@ def evaluate(args):
         print(f"[-] Файл весов модели не найден: {model_path}")
         return
 
-    val_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="val", augment=False)
-    if len(val_set) == 0:
+    if has_split(args.dataset_dir, "val"):
+        val_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="val", augment=False)
+    else:
+        # Датасет старого образца без разметки split: детерминированный random_split, как в train_ml.py
         full_set = MixingAIDataset(args.dataset_dir, max_len=args.max_len, split="all", augment=False)
         train_size = int(0.85 * len(full_set))
         val_size = len(full_set) - train_size
