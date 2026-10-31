@@ -16,7 +16,7 @@
 
 Пример:
   python scripts/compare_models.py val --models v4=data/models/v4/best_model.pth v5=data/models/v5/best_model.pth \
-      --datasets v3=data/processed/dataset_v3 v4=data/processed/dataset_v4
+      --datasets v4=data/processed/dataset_v4 v5=data/processed/dataset_v5
   python scripts/compare_models.py pairs --models ... --set preset_layers --n 200 --seed 4
   python scripts/compare_models.py report --platt-fit v4=v3 v5=v4 --save-platt v5
 """
@@ -408,7 +408,7 @@ def main() -> None:
                                                         "v5=data/models/v5/best_model.pth"])
     common.add_argument("--out", default="data/runs/model_v5")
     p_val = sub.add_parser("val", parents=[common])
-    p_val.add_argument("--datasets", nargs="+", default=["v3=data/processed/dataset_v3", "v4=data/processed/dataset_v4"])
+    p_val.add_argument("--datasets", nargs="+", default=["v4=data/processed/dataset_v4", "v5=data/processed/dataset_v5"])
     p_val.add_argument("--num-workers", type=int, default=4)
     p_pairs = sub.add_parser("pairs", parents=[common])
     p_pairs.add_argument("--set", choices=SETS, required=True)

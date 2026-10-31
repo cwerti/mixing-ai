@@ -14,7 +14,7 @@ def benchmark():
     print(f"[*] Используемое устройство: {device}")
     
     # 1. Тест скорости загрузки данных
-    dataset = MixingAIDataset("data/processed/dataset_v3")
+    dataset = MixingAIDataset("data/processed/dataset_v5")
     loader = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=0)
     
     print("[*] Тестирование DataLoader (только чтение с диска)...")

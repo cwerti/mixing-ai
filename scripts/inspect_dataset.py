@@ -73,7 +73,7 @@ def inspect_dataset(dataset_dir: str | Path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Скрипт инспекции сгенерированного датасета")
-    parser.add_argument("--dir", type=str, default="data/processed/dataset_v1", help="Путь к директории датасета")
+    parser.add_argument("--dir", type=str, default="data/processed/dataset_v5", help="Путь к директории датасета")
     args = parser.parse_args()
     
     inspect_dataset(args.dir)
