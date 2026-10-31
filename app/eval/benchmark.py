@@ -166,13 +166,15 @@ class ChainBenchmark:
 
     def run_case(self, case: BenchmarkCase, modes: tuple[str, ...] = MODES, budget_s: float = 60.0,
                  seed: int = 0, excerpt_s: float = 12.0, audio_dir: Path | None = None,
-                 with_baselines: bool = True, patience_renders: int | None = None) -> list[dict]:
+                 with_baselines: bool = True, patience_renders: int | None = None,
+                 max_renders: int | None = None) -> list[dict]:
         """
         Возвращает по строке результатов на каждый режим.
 
         Args:
             with_baselines: Добавить строки source и oracle (от seed не зависят, достаточно одного раза на пару).
             patience_renders: Ранняя остановка CMA-ES (см. ChainOptimizer.optimize).
+            max_renders: Ограничение числа рендеров CMA-ES (см. ChainOptimizer.optimize).
         """
         ref_features = extract_style_features(case.ref, self.sr, with_pitch=self.with_pitch)
         gate = self.processor.estimate_noise_gate_threshold(librosa.to_mono(case.src))
@@ -233,7 +235,7 @@ class ChainBenchmark:
                 model_params=model_params if use_model else None,
                 model_param_std=model_param_std if use_model else None, key_index=case.key_index, scale=case.scale,
                 gate_threshold_db=gate, budget_s=budget_s, excerpt_s=excerpt_s, seed=seed,
-                patience_renders=patience_renders,
+                patience_renders=patience_renders, max_renders=max_renders,
             )
             add(mode, self.render(case, result.chain, gate), result.chain, time.perf_counter() - started,
                 result.history)

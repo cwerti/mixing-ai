@@ -156,3 +156,19 @@ def test_start_params_omit_superseded_room_size():
     model_params = {"reverb": {k: 0.5 for k in PARAM_LAYOUT["reverb"]}}
     assert "room_size" not in _default_params("reverb")
     assert "room_size" not in _initial_params("reverb", {"reverb": 0.99}, model_params)
+
+
+def test_max_renders_caps_search_and_is_reproducible():
+    """С ограничением по рендерам вместо времени подбор не зависит от скорости машины: повтор дает ту же цепочку."""
+    dry = synthetic_vocal(SR, seconds=6.0, seed=5)
+    ref = _render_reference(dry)
+
+    def run():
+        return ChainOptimizer(sr=SR, log=lambda _: None).optimize(
+            dry, ref, budget_s=float("inf"), excerpt_s=6.0, seed=1, max_renders=30)
+
+    first, second = run(), run()
+    renders = first.history[-1][0]
+    assert renders <= 30 + 20  # проверка после поколения: перелет не больше одного поколения CMA-ES
+    assert renders == second.history[-1][0]
+    assert [(p.name, p.params) for p in first.chain.plugins] == [(p.name, p.params) for p in second.chain.plugins]

@@ -12,6 +12,10 @@ style_distance(результат, wet) считается прямая ошиб
 Пример:
     python scripts/real_pairs.py --analyze
     python scripts/real_pairs.py --budget 60 --patience 60
+    # Воспроизводимый протокол сравнения (docs/research/noise_floor.md): 200 рендеров вместо 60 с, 5 seed
+    python scripts/real_pairs.py --model-path data/models/v6/best_model.pth --metric embedding \
+        --modes model+optimizer optimizer --max-renders 200 --seed 0 1 2 3 4 --listen-dir= \
+        --out data/runs/benchmark/<имя>.jsonl --audio-tmp data/runs/benchmark/<имя>_audio
     python scripts/real_pairs.py --metric embedding --modes model+optimizer --out data/runs/benchmark/real_pairs_v2.jsonl         --listen-dir data/processed/real_pairs_v2
 """
 import argparse
@@ -260,7 +264,7 @@ def run(args) -> None:
         encoder = StyleEncoder(args.encoder)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    listen_root = Path(args.listen_dir)
+    listen_root = Path(args.listen_dir) if args.listen_dir else None
     pairs = [p for p in PAIRS if not args.only or p[0] in args.only]
     with open(out, "a" if args.only else "w", encoding="utf-8") as f:
         for name, dry_name, wet_name in pairs:
@@ -269,30 +273,36 @@ def run(args) -> None:
             for case, target in cases:
                 variant = case.name.split("__")[1]
                 audio_dir = Path(args.audio_tmp) / case.name
-                rows = bench.run_case(case, tuple(args.modes), budget_s=args.budget, seed=0, audio_dir=audio_dir,
-                                      patience_renders=args.patience)
-                # Потолок метрики: истинный wet фрагмента исходника против референса
-                ref_features = extract_style_features(case.ref, SR)
-                wet_distance, wet_per_feature = style_distance(extract_style_features(target, SR), ref_features)
-                rows.append({"case": case.name, "mode": "wet_true", "seed": 0, "distance": wet_distance,
-                             "per_feature": wet_per_feature, "plugins": [], "history": []})
                 ref_embedding = encoder.embed(case.ref, SR) if encoder is not None else None
-                for row in rows:
-                    y = (target if row["mode"] == "wet_true" else
-                         sf.read(audio_dir / f"{case.name}_{row['mode'].replace('+', '_')}_s0.wav")[0].T)
-                    row.update({"pair": name, "variant": variant, "dry_file": dry_name, "wet_file": wet_name,
-                                "metric": args.metric, **direct_errors(y, target, target_f0)})
-                    if encoder is not None:
-                        row["embedding_distance"] = encoder.distance(encoder.embed(y, SR), ref_embedding)
-                    row.pop("history", None)
-                    f.write(json.dumps(row, ensure_ascii=False, default=float) + "\n")
-                    f.flush()
-                    print(f"    {row['mode']:16s} style {row['distance']:.2f} | mrstft {row['mrstft_db']:.2f} дБ"
-                          f" | logmel {row['logmel_db']:.2f} дБ | f0 {row['f0_err_cents']:.1f} ц")
-                # Основная папка — cross (реальный сценарий), same_take/ — легкий случай
-                folder = listen_root / name if variant == "cross" else listen_root / name / "same_take"
-                compare_dir = Path(args.compare_audio_tmp) / case.name if args.compare_audio_tmp else None
-                write_listening(folder, audio_dir, case, target, rows, compare_dir)
+                for i, seed in enumerate(args.seed):
+                    rows = bench.run_case(case, tuple(args.modes), budget_s=args.budget, seed=seed,
+                                          audio_dir=audio_dir, with_baselines=i == 0,
+                                          patience_renders=args.patience, max_renders=args.max_renders)
+                    if i == 0:
+                        # Потолок метрики: истинный wet фрагмента исходника против референса
+                        ref_features = extract_style_features(case.ref, SR)
+                        wet_distance, wet_per_feature = style_distance(extract_style_features(target, SR),
+                                                                       ref_features)
+                        rows.append({"case": case.name, "mode": "wet_true", "seed": seed, "distance": wet_distance,
+                                     "per_feature": wet_per_feature, "plugins": [], "history": []})
+                    for row in rows:
+                        y = (target if row["mode"] == "wet_true" else
+                             sf.read(audio_dir / f"{case.name}_{row['mode'].replace('+', '_')}_s{seed}.wav")[0].T)
+                        row.update({"pair": name, "variant": variant, "dry_file": dry_name, "wet_file": wet_name,
+                                    "metric": args.metric, "budget_s": args.budget, "patience": args.patience,
+                                    "max_renders": args.max_renders, **direct_errors(y, target, target_f0)})
+                        if encoder is not None:
+                            row["embedding_distance"] = encoder.distance(encoder.embed(y, SR), ref_embedding)
+                        row.pop("history", None)
+                        f.write(json.dumps(row, ensure_ascii=False, default=float) + "\n")
+                        f.flush()
+                        print(f"    {row['mode']:16s} s{seed} style {row['distance']:.2f} | mrstft {row['mrstft_db']:.2f}"
+                              f" дБ | logmel {row['logmel_db']:.2f} дБ | f0 {row['f0_err_cents']:.1f} ц")
+                    if listen_root is not None and i == 0:
+                        # Основная папка — cross (реальный сценарий), same_take/ — легкий случай
+                        folder = listen_root / name if variant == "cross" else listen_root / name / "same_take"
+                        compare_dir = Path(args.compare_audio_tmp) / case.name if args.compare_audio_tmp else None
+                        write_listening(folder, audio_dir, case, target, rows, compare_dir, seed)
 
 
 def chain_text(chain: list[dict]) -> str:
@@ -302,7 +312,7 @@ def chain_text(chain: list[dict]) -> str:
 
 
 def write_listening(folder: Path, audio_dir: Path, case: BenchmarkCase, target: np.ndarray, rows: list[dict],
-                    compare_dir: Path | None = None):
+                    compare_dir: Path | None = None, seed: int = 0):
     """
     Папка прослушивания: все файлы на одной громкости (-18 LUFS; при перегрузе пик опускается до -0.1 дБFS).
     compare_dir — рендеры прошлого прогона (например, с метрикой style) для A/B: файлы с суффиксом _style.
@@ -311,12 +321,12 @@ def write_listening(folder: Path, audio_dir: Path, case: BenchmarkCase, target: 
     tracks = {"dry": case.src, "wet_true": target}
     for mode, file_mode in (("model", "model"), ("model+optimizer", "model_optimizer"),
                             ("optimizer", "optimizer_only")):
-        path = audio_dir / f"{case.name}_{mode.replace('+', '_')}_s0.wav"
+        path = audio_dir / f"{case.name}_{mode.replace('+', '_')}_s{seed}.wav"
         if path.exists():
             tracks[file_mode] = sf.read(path)[0].T
     if compare_dir is not None:
         for mode, file_mode in (("model+optimizer", "model_optimizer"), ("optimizer", "optimizer_only")):
-            path = compare_dir / f"{case.name}_{mode.replace('+', '_')}_s0.wav"
+            path = compare_dir / f"{case.name}_{mode.replace('+', '_')}_s{seed}.wav"
             if path.exists():
                 tracks[f"{file_mode}_style"] = sf.read(path)[0].T
     tracks["reference_used"] = case.ref
@@ -336,13 +346,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Бенчмарк на реальных парах dry/wet")
     parser.add_argument("--analyze", action="store_true", help="Только анализ пар (сдвиг, громкость, отличия)")
     parser.add_argument("--model-path", default="data/models/v5/best_model.pth")
-    parser.add_argument("--budget", type=float, default=60.0)
+    parser.add_argument("--budget", type=float, default=None,
+                        help="Бюджет CMA-ES в секундах (по умолчанию 60; с --max-renders — без ограничения времени)")
     parser.add_argument("--patience", type=int, default=60)
+    parser.add_argument("--max-renders", type=int, default=None,
+                        help="Ограничение числа рендеров CMA-ES вместо времени: прогон не зависит от загрузки машины")
+    parser.add_argument("--seed", type=int, nargs="+", default=[0],
+                        help="Seed подбора (несколько — прогоны подряд для оценки шума; папка прослушивания по первому)")
     parser.add_argument("--only", nargs="*", default=None, help="Прогнать только эти пары (дописать в jsonl)")
     parser.add_argument("--out", default="data/runs/benchmark/real_pairs.jsonl")
     parser.add_argument("--audio-tmp", default=None,
                         help="Папка рендеров (по умолчанию real_pairs_audio, для другой метрики — с ее суффиксом)")
-    parser.add_argument("--listen-dir", default="data/processed/real_pairs")
+    parser.add_argument("--listen-dir", default="data/processed/real_pairs", help="Пустая строка — не писать")
     parser.add_argument("--metric", choices=["style", "embedding", "combined", "embedding_tail"], default="style",
                         help="Целевая функция подбора (ChainOptimizer metric)")
     parser.add_argument("--compare-audio-tmp", default=None,
@@ -351,6 +366,8 @@ if __name__ == "__main__":
     parser.add_argument("--encoder", default="data/models/style_encoder/style_encoder.pt",
                         help="Чекпоинт кодировщика стиля для колонки embedding_distance (если есть)")
     parsed = parser.parse_args()
+    if parsed.budget is None:
+        parsed.budget = float("inf") if parsed.max_renders else 60.0
     if parsed.audio_tmp is None:
         parsed.audio_tmp = "data/runs/benchmark/real_pairs_audio" + ("" if parsed.metric == "style" else f"_{parsed.metric}")
     if parsed.analyze:
