@@ -8,7 +8,6 @@ Mixing-AI: Скрипт автоматического сведения вока
 
 import argparse
 import sys
-import shutil
 import subprocess
 from pathlib import Path
 import torch
@@ -187,13 +186,9 @@ def process_vocal(args):
     # 7. Генерация нативного .fst пресета
     output_fst.parent.mkdir(parents=True, exist_ok=True)
     try:
-        generator = FullPresetGenerator()
-        generator.generate_vocal_chain(eq_bands, output_name=output_fst.name)
-        # Копируем пресет в целевое место, если имя отличается
-        src_fst = Path("data/processed") / output_fst.name
-        if src_fst.exists() and src_fst.resolve() != output_fst.resolve():
-            shutil.copy(src_fst, output_fst)
-        print(f"\n[+] НА ТИВНЫЙ ПРЕСЕТ FL STUDIO СГЕНЕРИРОВАН:")
+        FullPresetGenerator().generate_vocal_chain(eq_bands, output_name=output_fst.name,
+                                                   output_dir=output_fst.parent)
+        print("\n[+] ПРЕСЕТ FL STUDIO (Fruity Parametric EQ 2; остальные плагины цепочки пока не экспортируются):")
         print(f"    --> {output_fst.resolve()}")
     except Exception as e:
         print(f"[!] Ошибка сборки .fst пресета: {e}")
@@ -244,7 +239,7 @@ def process_vocal(args):
     print("=========================================================")
     print("Инструкция по использованию в FL Studio:")
     print("1. Откройте ваш проект FL Studio.")
-    print("2. Перетащите файл пресета (.fst) прямо на дорожку микшера с вокалом.")
+    print("2. Перетащите файл пресета (.fst) в свободный слот микшера дорожки вокала — встанет Fruity Parametric EQ 2.")
     print("3. Либо прослушайте созданный WAV-файл для оценки звучания.")
     print("=========================================================\n")
 

@@ -409,7 +409,8 @@ class AnalysisThread(QThread):
             self.progress.emit("Оффлайн-рендеринг Pedalboard...")
             # Построение структуры цепочки плагинов
             from app.dataset.dataset_schema import ChainConfig, PluginConfig
-            plugins_list = [PluginConfig(name="eq", params={})] # Эквалайзер активен всегда
+            from app.mixing.chain_optimizer import eq_plugin
+            plugins_list = [eq_plugin(bands)]  # Те же полосы, что ушли в .fst, — превью совпадает с пресетом
             for i, plugin_name in enumerate(CHAIN_ORDER):
                 if plugin_name == "eq":
                     continue

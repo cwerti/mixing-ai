@@ -21,6 +21,7 @@ Fruity Parametric EQ 2: блоб события 213, int32 LE (версии да
 from __future__ import annotations
 
 import math
+import struct
 from dataclasses import dataclass
 
 from app.fl.plugins._common import int32s, require_len
@@ -121,6 +122,35 @@ def decode(blob: bytes) -> ParametricEQ2:
         data_version=ints[0], bands=bands, main_level_db=main_level, spare_bands=spare,
         global_raw=ints[MIN_INTS:],
     )
+
+
+def freq_raw(hz: float) -> int:
+    """Обратное к freq_hz: частота в Гц -> 0..65536 (20 Гц – 20 кГц)."""
+    hz = min(max(hz, 20.0), 20000.0)
+    return round(FULL_SCALE * math.log(hz / 20.0) / math.log(1000.0))
+
+
+def width_raw_for_q(q: float) -> int:
+    """Ширина peak-полосы по Q (через октавы; формула ширины «вероятная», см. модуль)."""
+    octaves = 2.0 / math.log(2) * math.asinh(1.0 / (2.0 * q))
+    return round(min(max((octaves - 0.1) / 4.9, 0.0), 1.0) * FULL_SCALE)
+
+
+def encode_bands(blob: bytes, bands: list[tuple[float, float]], peak_q: float | None = None) -> bytes:
+    """
+    Блоб EQ 2 с новыми частотами и усилениями первых len(bands) полос основного банка; остальное (типы,
+    порядок, банк Compare, глобальные опции) берется из исходного блоба. bands — [(Гц, дБ), ...],
+    усиление ограничено ±18 dB. peak_q — ширина peak-полос (как у DSPEngine), None — оставить как есть.
+    """
+    eq = decode(blob)
+    ints = list(int32s(blob))
+    for i, (hz, gain_db) in enumerate(bands[:BAND_COUNT]):
+        ints[1 + i] = round(min(max(gain_db, -18.0), 18.0) * 100)
+        ints[1 + BAND_COUNT + i] = freq_raw(hz)
+        if peak_q is not None and eq.bands[i].type == "peaking":
+            ints[1 + 2 * BAND_COUNT + i] = width_raw_for_q(peak_q)
+    head = struct.pack(f"<{len(ints)}i", *ints)
+    return head + blob[len(head):]
 
 
 def summary(eq: ParametricEQ2) -> str:
