@@ -65,9 +65,17 @@ SEARCHABLE_PLUGINS = [name for name in CHAIN_ORDER if name in PARAM_LAYOUT and n
 # значениями. Старт нейтральный по фильтрам (без predelay и срезов): их (по роликам low cut 400–700 Гц, темный
 # хвост) поиск находит сам, а старт с ними проигрывал полному реверу. decay_s включает ревер с явным RT60
 # (старт ~2 с): Freeverb не давал хвоста длиннее ~3 с, и поиск упирался в room_size = 1 (Whiptails).
+# Дилей и расширитель — тоже send/срезы без окраски на старте (повторы без фильтров, верх Side без среза).
 OPTIMIZER_EXTRA_PARAMS = {
     "reverb": {"predelay_ms": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0, "decay_s": 0.086},
+    "delay": {"stereo_spread": 0.0, "low_cut_hz": 0.0, "high_cut_hz": 1.0},
+    "stereo_enhancer": {"high_cut_hz": 1.0},
 }
+
+# Время дилея перед CMA-ES перебирается по сетке: целевая функция по нему многоэкстремальна (повторы совпадают
+# с ритмом фразы только около нужного значения), и из середины диапазона CMA-ES его не находил. Whiptails:
+# повторы через ~320 мс, признак delay_peak их не видел, и дилей не попадал в цепочку.
+DELAY_SCAN_SECONDS = tuple(round(0.10 + 0.02 * i, 2) for i in range(21))
 
 # Параметры модели, которые не звучат, когда заданы параметры оптимизатора (у ревера с RT60 нет room_size)
 SUPERSEDED_PARAMS = {("reverb", "room_size")}
@@ -331,7 +339,7 @@ class ChainOptimizer:
                  model_param_std: dict[str, dict[str, float]] | None = None, key_index: int = 0,
                  scale: str = "major", gate_threshold_db: float | None = None, budget_s: float = 60.0,
                  excerpt_s: float = 12.0, seed: int = 0, patience_renders: int | None = None,
-                 min_improvement: float = 0.01, allow_tune: bool = True,
+                 max_renders: int | None = None, min_improvement: float = 0.01, allow_tune: bool = True,
                  tune_speed: float | None = None,
                  fixed_plugins: list[PluginConfig] | None = None) -> OptimizationResult:
         """
@@ -349,6 +357,8 @@ class ChainOptimizer:
             excerpt_s: Длина фрагмента исходника для рендеров в цикле.
             patience_renders: Остановить CMA-ES, если за столько рендеров целевая функция улучшилась меньше,
                 чем на min_improvement (None — работать до бюджета или сходимости).
+            max_renders: Ограничение числа рендеров CMA-ES (проверяется после каждого поколения). Вместе с
+                budget_s=inf делает подбор независимым от скорости машины и воспроизводимым по seed.
             allow_tune: Разрешить автотюн. PSOLA пересинтезирует сигнал и на переходах нот может давать
                 ВЧ-артефакты, поэтому пользователь может его запретить.
             tune_speed: Нормализованная сила тюна [0..1] вместо подбора по отклонению от нот референса
@@ -406,6 +416,11 @@ class ChainOptimizer:
                 and _uses_prior(p, model_probs, model_params)}
         if kept - set(plugins):
             note(f"[*] По уверенности модели добавлены: {sorted(kept - set(plugins))}")
+        if "reverb" in plugins and "delay" not in plugins:
+            # Повторы дилея в паузах метрика признаков путает с хвостом ревера: проверяем дилей вместе с ним,
+            # лишний уберет упрощение ниже
+            plugins.append("delay")
+            note("[*] delay: проверяется вместе с ревером")
         plugins = [p for p in SEARCHABLE_PLUGINS if p in set(plugins) | kept]
         prior_plugins = {p for p in plugins if _uses_prior(p, model_probs, model_params)}
         current = {p: _initial_params(p, model_probs, model_params) for p in plugins}
@@ -432,6 +447,19 @@ class ChainOptimizer:
             if fallback_score < best_score:
                 note(f"[*] Старт модели хуже мягкого ({best_score:.2f} против {fallback_score:.2f}), он отброшен")
                 current, best_score, prior_plugins = fallback, fallback_score, set()
+        if "delay" in current:
+            low, high = DATAGEN_PLUGINS["delay"]["params"]["delay_seconds"]
+            scan = {}
+            for seconds in DELAY_SCAN_SECONDS:
+                if low <= seconds <= high:
+                    value = (seconds - low) / (high - low)
+                    scan[value] = objective({**current, "delay": {**current["delay"], "delay_seconds": value}})
+            best_time = min(scan, key=scan.get)
+            if scan[best_time] < best_score:
+                current = {**current, "delay": {**current["delay"], "delay_seconds": best_time}}
+                best_score = scan[best_time]
+            history.append((history[-1][0] + len(scan), best_score))
+            note(f"[*] Время дилея по сетке: {(low + current['delay']['delay_seconds'] * (high - low)) * 1000:.0f} мс")
         if layout:
             x0 = [current[p][k] for p, k in layout]
             stds = search_stds(layout, prior_plugins, model_param_std)
@@ -442,7 +470,8 @@ class ChainOptimizer:
             es = cma.CMAEvolutionStrategy(x0, DEFAULT_SIGMA, options)
             started = time.perf_counter()
             evaluations = history[-1][0]
-            while not es.stop() and time.perf_counter() - started < budget_s:
+            while (not es.stop() and time.perf_counter() - started < budget_s
+                   and (max_renders is None or evaluations < max_renders)):
                 candidates = es.ask()
                 scores = [objective(unpack(x)) for x in candidates]
                 es.tell(candidates, scores)

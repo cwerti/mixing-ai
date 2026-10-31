@@ -149,7 +149,8 @@ class VocalEnhancer:
         
         return y_excited
 
-    def apply_stereo_enhancer(self, y: np.ndarray, delay_ms: float = 18.0, width: float = 1.0) -> np.ndarray:
+    def apply_stereo_enhancer(self, y: np.ndarray, delay_ms: float = 18.0, width: float = 1.0,
+                              high_cut_hz: float | None = None) -> np.ndarray:
         """
         Расширяет стереобазу задержанной копией голоса, подмешанной только в Side (Mid/Side-вариант эффекта
         Хааса): L = M + S + g*d, R = M + S - g*d, где d — задержанный Mid выше 150 Гц, g = width / 2.
@@ -159,6 +160,7 @@ class VocalEnhancer:
             y: Входной сигнал (1D моно-массив или 2D стерео-массив).
             delay_ms: Задержка в миллисекундах (обычно 12..25 мс для эффекта Хааса).
             width: Степень расширения стереобазы (0.0..1.0).
+            high_cut_hz: Срез верха у расширения (None — без среза): верх остается узким, как в реальных миксах.
             
         Returns:
             np.ndarray: Стерео-аудиосигнал формы (2, n_samples).
@@ -187,7 +189,11 @@ class VocalEnhancer:
         delayed = np.zeros_like(mid)
         delayed[delay_samples:] = mid[:-delay_samples]
         sos_hp = signal.butter(4, 150.0, btype='highpass', fs=self.sr, output='sos')
-        spread = 0.5 * width * signal.sosfilt(sos_hp, delayed)
+        spread = signal.sosfilt(sos_hp, delayed)
+        if high_cut_hz is not None:
+            spread = signal.sosfilt(signal.butter(4, min(high_cut_hz, 0.45 * self.sr), btype='lowpass', fs=self.sr,
+                                                  output='sos'), spread)
+        spread = 0.5 * width * spread
 
         return np.vstack([y_stereo[0] + spread, y_stereo[1] - spread]).astype(y_stereo.dtype)
 

@@ -117,6 +117,9 @@ DATAGEN_PLUGINS = {
         "params": {
             "delay_ms": (6.0, 25.0),
             "width": (0.25, 1.0),
+            # Срез верха у расширения (параметр оптимизатора, не модели): у реальных миксов верх уже середины
+            # (Whiptails: Side на 3–8 кГц на 33 дБ ниже Mid, у Хааса без среза — на 16 дБ)
+            "high_cut_hz": (2000.0, 20000.0),
         }
     },
     "reverb": {
@@ -139,7 +142,14 @@ DATAGEN_PLUGINS = {
         "params": {
             "delay_seconds": (0.08, 0.50),
             "feedback": (0.10, 0.55),
-            "mix": (0.08, 0.35),
+            # Нижняя граница 0 (была 0.08 до модели v7): в send-режиме это уровень повторов, и тихие повторы
+            # «на подложку» должны быть в диапазоне
+            "mix": (0.0, 0.35),
+            # Параметры send-шины (DELAY_SEND_PARAMS), подбирает оптимизатор: разнос времени L/R (левый ×(1+s),
+            # правый ×(1-s), Whiptails: 356/322 мс) и фильтры на повторах
+            "stereo_spread": (0.0, 0.25),
+            "low_cut_hz": (20.0, 1000.0),
+            "high_cut_hz": (1500.0, 20000.0),
         }
     },
     "exciter": {
@@ -183,11 +193,16 @@ LEGACY_PARAM_RANGES = {
     ("chorus", "mix"): (0.12, 0.45),
     ("reverb", "room_size"): (0.15, 0.95),
     ("reverb", "wet_level"): (0.06, 0.36),
+    ("delay", "mix"): (0.08, 0.35),
 }
 
 # Параметры ревера как send-шины: если хоть один задан, DSPEngine рендерит ревер параллельно с predelay и
 # фильтрами на мокром сигнале; без них — прежний последовательный Reverb (цепочки модели звучат как раньше).
 REVERB_SEND_PARAMS = ("predelay_ms", "low_cut_hz", "high_cut_hz", "decay_s")
+
+# Параметры дилея как send-шины: если хоть один задан, повторы идут параллельно сухому (сухой не ослабляется),
+# с разносом L/R и фильтрами в петле обратной связи; без них — прежний Delay из pedalboard.
+DELAY_SEND_PARAMS = ("stereo_spread", "low_cut_hz", "high_cut_hz")
 
 # Официальная структура размещения параметров в плоском векторе обучения нейросети (24 параметра).
 # Эквалайзер рассчитывается через SpectralMatcher, а подавитель резонансов — по исходнику.
@@ -221,7 +236,7 @@ def model_param_ranges() -> Dict[str, Dict[str, List[float]]]:
 
 # dataset_v4 сгенерирован до подъема потолков реверба (wet_level 0.06–0.36, room_size 0.15–0.95), но уже с
 # диапазонами drive/chorus.mix модели v5; в его stats.json диапазоны не записаны
-DATASET_V4_PARAM_RANGES = {name: {p: list(LEGACY_PARAM_RANGES[(name, p)]) if name == "reverb" and
+DATASET_V4_PARAM_RANGES = {name: {p: list(LEGACY_PARAM_RANGES[(name, p)]) if name in ("reverb", "delay") and
                                   (name, p) in LEGACY_PARAM_RANGES else list(DATAGEN_PLUGINS[name]["params"][p])
                                   for p in layout} for name, layout in PARAM_LAYOUT.items()}
 

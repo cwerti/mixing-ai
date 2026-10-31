@@ -4,7 +4,8 @@ from pedalboard import (
     HighShelfFilter, Chorus, Distortion, HighpassFilter, LowpassFilter,
     NoiseGate, Limiter, Gain
 )
-from app.dataset.dataset_schema import ChainConfig, PluginConfig, DATAGEN_PLUGINS, REVERB_SEND_PARAMS
+from app.dataset.dataset_schema import (ChainConfig, PluginConfig, DATAGEN_PLUGINS, REVERB_SEND_PARAMS,
+                                        DELAY_SEND_PARAMS)
 from app.bridge.vst_parameter_mapper import VSTParameterMapper
 from scipy.signal import fftconvolve, sosfilt, butter
 
@@ -21,7 +22,8 @@ def decay_reverb(y: np.ndarray, sr: int, decay_s: float, damping: float, seed: i
     # Хвост длиннее сигнала не слышен (свёртка обрезается по его длине), а дальше 1.5·RT60 он ниже -100 дБ
     n = int(min(decay_s * 1.5, y.shape[-1] / sr + 0.1, 30.0) * sr)
     t = np.arange(n) / sr
-    hf_decay = decay_s * (1.0 - 0.85 * float(np.clip(damping, 0.0, 1.0)))
+    # До 0.95: у Whiptails верх хвоста (3–16 кГц) через 1 с на 25–35 дБ тише середины, с 0.85 он оставался шумным
+    hf_decay = decay_s * (1.0 - 0.95 * float(np.clip(damping, 0.0, 1.0)))
     low_sos = butter(2, 2000.0, "low", fs=sr, output="sos")
     high_sos = butter(2, 2000.0, "high", fs=sr, output="sos")
     channels = 1 if y.ndim == 1 else y.shape[0]
@@ -35,6 +37,35 @@ def decay_reverb(y: np.ndarray, sr: int, decay_s: float, damping: float, seed: i
         return fftconvolve(y, irs[0])[:len(y)].astype(np.float32)
     mono = y.mean(axis=0)
     return np.stack([fftconvolve(mono, ir)[:y.shape[1]] for ir in irs]).astype(np.float32)
+
+def send_delay(y: np.ndarray, sr: int, delay_s: float, feedback: float, spread: float = 0.0,
+               low_cut_hz: float = 20.0, high_cut_hz: float = 20000.0, max_taps: int = 24) -> np.ndarray:
+    """
+    Мокрый сигнал дилея-send: повторы моно-суммы, k-й задержан на k·T и k раз пропущен через срезы (фильтры
+    в петле обратной связи, как у Fruity Delay 3 и аналоговых эхо — каждый повтор темнее предыдущего).
+    Время левого канала T·(1+spread), правого T·(1-spread): разные времена дают ширину, как пинг-понг.
+
+    Returns:
+        np.ndarray: Повторы формы (2, n) без сухого сигнала, первый повтор на уровне сигнала.
+    """
+    mono = (y if y.ndim == 1 else y.mean(axis=0)).astype(np.float32)
+    n = mono.shape[-1]
+    sos = np.vstack([butter(2, float(np.clip(low_cut_hz, 20.0, 0.45 * sr)), "high", fs=sr, output="sos"),
+                     butter(2, float(np.clip(high_cut_hz, 100.0, 0.45 * sr)), "low", fs=sr, output="sos")])
+    wet = np.zeros((2, n), dtype=np.float32)
+    for ch, factor in enumerate((1.0 + spread, 1.0 - spread)):
+        d = int(delay_s * factor * sr)
+        if d <= 0:
+            continue
+        cur = mono
+        for k in range(1, max_taps + 1):
+            gain = feedback ** (k - 1)
+            if k * d >= n or gain < 1e-3:
+                break
+            cur = sosfilt(sos, cur).astype(np.float32)
+            wet[ch, k * d:] += gain * cur[:n - k * d]
+    return wet
+
 
 class DSPEngine:
     """
@@ -433,7 +464,8 @@ class DSPEngine:
                 phys = self.get_physical_params(plugin)
                 delay_val = phys.get("delay_ms", 18.0)
                 width_val = phys.get("width", 1.0)
-                y_working = enhancer.apply_stereo_enhancer(y_working, delay_ms=delay_val, width=width_val)
+                y_working = enhancer.apply_stereo_enhancer(y_working, delay_ms=delay_val, width=width_val,
+                                                           high_cut_hz=phys.get("high_cut_hz"))
                 
             elif plugin.name == "harmony":
                 # Параллельная шина гармонии/дабла: сдвигается сигнал после инсертов лидера, стоящих выше
@@ -503,11 +535,25 @@ class DSPEngine:
                     y_working = (2.0 * phys.get("dry_level", 0.9) * y_working + wet_val * wet).astype(np.float32)
                 
             elif plugin.name == "delay":
-                effects.append(Delay(
-                    delay_seconds=phys.get("delay_seconds", 0.25),
-                    feedback=phys.get("feedback", 0.2),
-                    mix=phys.get("mix", 0.1)
-                ))
+                if not any(k in phys for k in DELAY_SEND_PARAMS):
+                    effects.append(Delay(
+                        delay_seconds=phys.get("delay_seconds", 0.25),
+                        feedback=phys.get("feedback", 0.2),
+                        mix=phys.get("mix", 0.1)
+                    ))
+                else:
+                    # Дилей как send-шина: сухой не ослабляется, повторы с фильтрами и разносом L/R
+                    if effects:
+                        try:
+                            y_working = Pedalboard(effects)(y_working, sr)
+                        except Exception as e:
+                            print(f"[-] Ошибка обработки Pedalboard перед дилеем: {e}")
+                        effects = []
+                    wet = send_delay(y_working, sr, phys.get("delay_seconds", 0.25), phys.get("feedback", 0.2),
+                                     spread=phys.get("stereo_spread", 0.0), low_cut_hz=phys.get("low_cut_hz", 20.0),
+                                     high_cut_hz=phys.get("high_cut_hz", 20000.0))
+                    dry = y_working if y_working.ndim == 2 and y_working.shape[0] == 2 else                         np.vstack([y_working.reshape(-1, y_working.shape[-1]).mean(axis=0)] * 2)
+                    y_working = (dry + phys.get("mix", 0.1) * wet).astype(np.float32)
                 
         # Лимитер в самом конце цепочки, чтобы предотвратить цифровой клиппинг
         if final_limiter:
