@@ -64,7 +64,7 @@ def _parse_value(text: str):
 
 
 def vst_effects(path: str, settings: list[str], sweep: str | None, sweep_steps: int):
-    """(имя, эффект, параметры) для VST3: фиксированные --set и перебор одного параметра --sweep."""
+    """(имя, эффект, параметры, источник) для VST3: фиксированные --set и перебор одного параметра --sweep."""
     import pedalboard
     plugin = pedalboard.load_plugin(path)
     base = {k: _parse_value(v) for k, v in (s.split("=", 1) for s in settings)}
@@ -97,7 +97,10 @@ def vst_effects(path: str, settings: list[str], sweep: str | None, sweep_steps: 
             if value is not None:
                 setattr(fresh, sweep, value)
             return fresh.process(x, sr, reset=True)
-        yield name, render, params
+        settings = dict(base)
+        if value is not None:
+            settings[sweep] = value if isinstance(value, str) else float(value)
+        yield name, render, params, {"vst": path, "settings": settings}
 
 
 def print_table(rows: list[dict]) -> None:
@@ -142,17 +145,17 @@ def main() -> None:
 
     jobs = []
     if args.builtin:
-        jobs += [(name, dsp_effect(plugin, params), {"plugin": plugin, **params})
+        jobs += [(name, dsp_effect(plugin, params), {"plugin": plugin, **params}, {"dsp": plugin, "params": params})
                  for name, (plugin, params) in BUILTIN.items()]
     for path in args.vst:
         jobs += list(vst_effects(path, args.set, args.sweep, args.sweep_steps))
 
     new_rows = []
-    for name, effect, params in jobs:
+    for name, effect, params, source in jobs:
         for k in range(args.repeat):
             fp = fingerprint(effect, sr=args.sr, ir_seconds=args.ir_seconds)
             row_name = name if args.repeat == 1 else f"{name}#{k}"
-            new_rows.append({"name": row_name, "params": params, "fingerprint": fp})
+            new_rows.append({"name": row_name, "params": params, "source": source, "fingerprint": fp})
             print(f"[+] {row_name}", flush=True)
     if new_rows:
         OUT_DIR.mkdir(parents=True, exist_ok=True)

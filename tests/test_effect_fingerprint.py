@@ -61,3 +61,25 @@ def test_identity_is_silent_tail():
     f = fingerprint(lambda x, sr: x, **FAST)
     assert f.get("silent_tail") and f["drr_db"] == 60.0
     assert np.isfinite(fingerprint_vector(f)).all()
+
+
+def test_echo_density_windows_count_from_impulse():
+    def predelayed(x, sr):
+        wet = decay_reverb(x.mean(axis=0), sr, 1.0, 0.5)
+        d = int(0.1 * sr)
+        return x + 0.5 * np.pad(wet, (d, 0))[:x.shape[1]]
+
+    pre = fingerprint(predelayed, **FAST)
+    echo = fingerprint(_delay(0.32), **FAST)
+    # До прихода хвоста (предзадержка 100 мс) окна «пустые», а не плотность первого прихода
+    assert pre["ned_0_50"] == 0.0 and pre["ned_200_400"] > 0.8
+    assert 80.0 <= pre["mixing_ms"] <= 160.0
+    # Отдельные повторы дилея — низкая плотность во всех окнах, хвост так и не становится диффузным
+    assert echo["ned_mid"] == 0.0 and echo["ned_late"] < 0.3
+    assert echo["mixing_ms"] > 1000.0
+
+
+def test_long_tail_rerenders_with_longer_window():
+    f = fingerprint(_reverb(8.0, 0.5), **FAST)
+    assert f["ir_seconds"] == 9.0
+    assert 6.5 < f["rt60_1000"] < 10.0

@@ -157,6 +157,67 @@ def _band_energy(spec: np.ndarray, freqs: np.ndarray, center: float, half_width:
     return float(spec[(d <= half_width) & (d >= exclude)].sum())
 
 
+# Окна профиля плотности эха (мс от импульса): лог-шаг, чтобы видеть и ранние отражения, и разгон хвоста
+NED_PROFILE_MS = (0, 50, 100, 200, 400, 800, 1600, 3200)
+NED_WINDOW_S = 0.02
+# Окно плотности считается, только если его энергия не ниже этого уровня от самого громкого окна
+NED_GATE_DB = -50.0
+
+
+def echo_density_profile(tail: np.ndarray, sr: int) -> dict:
+    """
+    Плотность эха по абсолютному времени от импульса (tail начинается через DIRECT_S после него).
+
+    Окна тише NED_GATE_DB до первого громкого окна — «еще пусто» (плотность 0: предзадержка или пауза перед
+    повтором), после последнего громкого — «уже затухло» (NaN, не считается). Прежняя версия считала окна от
+    первого прихода, и при дилее 300 мс все режимы Supermassive попадали в одно и то же место первого повтора.
+
+    Returns:
+        dict: ned_early (0–50 мс), ned_mid (50–200), ned_late (200–1000), ned_{a}_{b} — профиль по
+            NED_PROFILE_MS, mixing_ms — время, когда сглаженная плотность впервые доходит до 0.9.
+    """
+    w = max(8, int(NED_WINDOW_S * sr))
+    n = len(tail) // w
+    f: dict = {}
+    if n == 0:
+        return f
+    energy = (tail[:n * w].reshape(n, w) ** 2).sum(axis=1)
+    loud = energy >= energy.max() * 10.0 ** (NED_GATE_DB / 10.0)
+    ned = echo_density(tail[:n * w], sr, NED_WINDOW_S)
+    idx = np.nonzero(loud)[0]
+    first, last = int(idx[0]), int(idx[-1])
+    ned = np.where(loud, ned, 0.0)
+    ned[last + 1:] = np.nan
+    offset = DIRECT_S
+
+    def window_mean(a_s: float, b_s: float) -> float:
+        lo = max(0, int(round((a_s - offset) / NED_WINDOW_S)))
+        hi = max(lo, int(round((b_s - offset) / NED_WINDOW_S)))
+        seg = ned[lo:hi]
+        seg = seg[np.isfinite(seg)]
+        return float(seg.mean()) if seg.size else float("nan")
+
+    for name, (a, b) in {"ned_early": (0.0, 0.05), "ned_mid": (0.05, 0.2), "ned_late": (0.2, 1.0)}.items():
+        f[name] = window_mean(a, b)
+    for a, b in zip(NED_PROFILE_MS[:-1], NED_PROFILE_MS[1:]):
+        f[f"ned_{a}_{b}"] = window_mean(a / 1000.0, b / 1000.0)
+    valid = np.nan_to_num(ned[:last + 1])
+    smooth = np.convolve(valid, np.ones(3) / 3.0, "same") if valid.size >= 3 else valid
+    mixed = np.nonzero(smooth[first:] >= 0.9)[0]
+    end = (mixed[0] + first) if mixed.size else last + 1
+    f["mixing_ms"] = float((end * NED_WINDOW_S + offset) * 1000.0)
+    return f
+
+
+def tail_undecayed(h: np.ndarray, sr: int, frame_s: float = 0.02, depth_db: float = 45.0) -> bool:
+    """Хвост не успел затухнуть на depth_db к концу окна (последние 0.5 с) — RT60 по такому окну занижен/шумит."""
+    e = _frame_energy(h.mean(axis=0)[max(1, int(DIRECT_S * sr)):], sr, frame_s)
+    if e.size < 2 or e.max() <= 0:
+        return False
+    last = e[-max(1, int(0.5 / frame_s)):]
+    return bool(10.0 * np.log10(last.max() / e.max() + 1e-20) > -depth_db)
+
+
 def impulse_features(h: np.ndarray, sr: int) -> dict:
     """Признаки отклика на импульс h (2, n), импульс в отсчете 0."""
     mid, side = h.mean(axis=0), 0.5 * (h[0] - h[1])
@@ -184,18 +245,11 @@ def impulse_features(h: np.ndarray, sr: int) -> dict:
     for c, e in zip(BANDS_HZ, band_e):
         f[f"tail_db_{c}"] = _db(e / total)
 
-    # Плотность эха и стерео — только пока хвост выше -50 дБ, дальше считается шум хвоста окна
+    # Стерео и периодичность — только пока хвост выше -50 дБ, дальше считается шум хвоста окна
     alive_frames = np.nonzero(env_db > -50.0)[0]
     alive_end = (alive_frames[-1] + 1) * int(0.005 * sr) if alive_frames.size else len(tail_mid)
     start = first * int(0.005 * sr)
-    ned = echo_density(tail_mid[start:alive_end], sr)
-    w = 0.02
-    for name, (a, b) in {"ned_early": (0.0, 0.05), "ned_mid": (0.05, 0.2), "ned_late": (0.2, 1.0)}.items():
-        seg = ned[int(a / w):int(b / w)]
-        f[name] = float(seg.mean()) if seg.size else float("nan")
-    smooth_ned = np.convolve(ned, np.ones(3) / 3.0, "same") if ned.size >= 3 else ned
-    mixed = np.nonzero(smooth_ned >= 0.9)[0]
-    f["mixing_ms"] = float(mixed[0] * w * 1000.0) if mixed.size else float(len(ned) * w * 1000.0)
+    f.update(echo_density_profile(tail_mid, sr))
 
     for ch, name in ((0, "l"), (1, "r")):
         period, strength = periodicity(tail[ch][:alive_end], sr)
@@ -240,13 +294,26 @@ def sine_features(outputs: dict[float, np.ndarray], sr: int, levels_db: dict[flo
 
 
 def fingerprint(effect: Effect, sr: int = 48000, ir_seconds: float = 6.0, sine_seconds: float = 4.0,
-                sine_levels_dbfs: tuple[float, ...] = (-36.0, -18.0, -6.0), impulse_amp: float = 0.5) -> dict:
-    """Полный отпечаток эффекта. Детерминирован, если детерминирован сам эффект."""
+                sine_levels_dbfs: tuple[float, ...] = (-36.0, -18.0, -6.0), impulse_amp: float = 0.5,
+                max_ir_seconds: float = 30.0) -> dict:
+    """
+    Полный отпечаток эффекта. Детерминирован, если детерминирован сам эффект.
+
+    Если хвост не затух на 45 дБ в окне ir_seconds, импульс перерендеривается один раз окном ×3 (не длиннее
+    max_ir_seconds): у режимов Supermassive хвосты 25–30 с, и в окне 8 с RT60 оценивался регрессией и шумел.
+    """
     n = int(ir_seconds * sr)
     x = np.zeros((2, n), dtype=np.float32)
     x[:, 0] = impulse_amp
     h = _render(effect, x, sr) / impulse_amp
+    ir_used = ir_seconds
+    if tail_undecayed(h, sr) and ir_seconds < max_ir_seconds:
+        ir_used = min(3.0 * ir_seconds, max_ir_seconds)
+        x_long = np.zeros((2, int(ir_used * sr)), dtype=np.float32)
+        x_long[:, 0] = impulse_amp
+        h = _render(effect, x_long, sr) / impulse_amp
     f = impulse_features(h, sr)
+    f["ir_seconds"] = ir_used
 
     shift = int(SHIFT_S * sr)
     x2 = np.zeros((2, n + shift), dtype=np.float32)
