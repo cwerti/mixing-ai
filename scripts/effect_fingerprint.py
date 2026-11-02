@@ -75,7 +75,7 @@ def vst_effects(path: str, settings: list[str], sweep: str | None, sweep_steps: 
         param = plugin.parameters[sweep]
         valid = getattr(param, "valid_values", None)
         if valid and len(valid) <= 64:
-            values = list(valid)
+            values = list(dict.fromkeys(valid))  # pedalboard повторяет первое значение в конце списка
         else:
             lo, hi = param.range[0], param.range[1]
             values = list(np.linspace(lo, hi, sweep_steps))
@@ -87,8 +87,16 @@ def vst_effects(path: str, settings: list[str], sweep: str | None, sweep_steps: 
         params = {k: (v if isinstance(v, (bool, int, float, str)) else str(v))
                   for k, v in ((k, getattr(plugin, k)) for k in plugin.parameters)}
 
-        def render(x, sr, plugin=plugin):
-            return plugin.process(x, sr, reset=True)
+        # Свежий экземпляр на каждый рендер: reset=True не сбрасывает внутреннее состояние части плагинов
+        # (Supermassive: фаза LFO и буферы — два рендера подряд расходятся на ~2 дБ log-mel), а свежая
+        # загрузка дает результат бит в бит
+        def render(x, sr, value=value):
+            fresh = pedalboard.load_plugin(path)
+            for key, val in base.items():
+                setattr(fresh, key, val)
+            if value is not None:
+                setattr(fresh, sweep, value)
+            return fresh.process(x, sr, reset=True)
         yield name, render, params
 
 
@@ -125,6 +133,7 @@ def main() -> None:
     parser.add_argument("--sr", type=int, default=48000)
     parser.add_argument("--ir-seconds", type=float, default=6.0)
     parser.add_argument("--tag", default=None, help="имя jsonl в data/runs/fingerprint/")
+    parser.add_argument("--repeat", type=int, default=1, help="снять каждый отпечаток N раз (проверка шума)")
     args = parser.parse_args()
 
     rows: list[dict] = []
@@ -140,9 +149,11 @@ def main() -> None:
 
     new_rows = []
     for name, effect, params in jobs:
-        fp = fingerprint(effect, sr=args.sr, ir_seconds=args.ir_seconds)
-        new_rows.append({"name": name, "params": params, "fingerprint": fp})
-        print(f"[+] {name}", flush=True)
+        for k in range(args.repeat):
+            fp = fingerprint(effect, sr=args.sr, ir_seconds=args.ir_seconds)
+            row_name = name if args.repeat == 1 else f"{name}#{k}"
+            new_rows.append({"name": row_name, "params": params, "fingerprint": fp})
+            print(f"[+] {row_name}", flush=True)
     if new_rows:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         tag = args.tag or ("builtin" if args.builtin and not args.vst else Path(args.vst[0]).stem if args.vst else "run")
