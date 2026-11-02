@@ -44,3 +44,13 @@ def test_embedder_deterministic_and_roundtrip(tmp_path):
     save_embedder(path, model, mean, std, {"test": True})
     loaded, m2, s2 = load_embedder(path)
     assert np.allclose(embed(loaded, inputs, m2, s2), e1)
+
+
+def test_input_stats_floor_keeps_constant_features_harmless():
+    from app.eval.fingerprint_embedding import STD_FLOOR, input_stats
+    inputs = np.zeros((10, 3), dtype=np.float32)
+    inputs[:, 1] = np.linspace(-5.0, 5.0, 10)
+    mean, std = input_stats(inputs)
+    # Почти постоянный в обучении признак не должен раздувать малую разницу чужого рендера
+    assert std[0] == STD_FLOOR and std[1] > 1.0
+    assert abs((0.01 - mean[0]) / std[0]) < 0.1

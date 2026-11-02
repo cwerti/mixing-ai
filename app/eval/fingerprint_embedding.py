@@ -16,6 +16,11 @@ from torch import nn
 
 from app.eval.effect_fingerprint import BANDS_HZ, fingerprint_vector
 
+# Нижняя граница σ при нормировке входа (единицы fingerprint_vector — «заметная разница», карта — 20 дБ). Без нее
+# признак, почти постоянный в обучении (compression_db у реверов: σ 0.001), раздувал ничтожную разницу в z ≈ 10
+# и ломал эмбеддинг чужого рендера (scripts/adapter_search.py --check-fast)
+STD_FLOOR = 0.25
+
 # Границы окон карты: первые 2 мс — прямой звук, дальше логарифмически до 8 с
 MAP_EDGES_S = np.concatenate([[0.0, 0.002], np.geomspace(0.01, 8.0, 20)])
 MAP_FLOOR_DB = -80.0
@@ -70,6 +75,11 @@ class FingerprintEmbedder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
+
+
+def input_stats(inputs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Среднее и σ для нормировки входа (σ не меньше STD_FLOOR)."""
+    return inputs.mean(axis=0), np.maximum(inputs.std(axis=0), STD_FLOOR)
 
 
 def embed(model: FingerprintEmbedder, inputs: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:

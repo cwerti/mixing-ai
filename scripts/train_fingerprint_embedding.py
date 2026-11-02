@@ -214,6 +214,18 @@ def pair_targets(mels: np.ndarray) -> np.ndarray:
     return 0.5 * (d + d.T)
 
 
+def cached_pair_targets(mels: np.ndarray) -> np.ndarray:
+    """pair_targets с кэшем на диске: матрица 472×472 считается ~1 мин, а обучений с ней много."""
+    cache = OUT / "pair_targets.npy"
+    if cache.exists():
+        d = np.load(cache)
+        if d.shape == (len(mels), len(mels)):
+            return d
+    d = pair_targets(mels)
+    np.save(cache, d)
+    return d
+
+
 def _pairs(idx: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     i, j = np.triu_indices(len(idx), k=1)
     return idx[i], idx[j]
@@ -246,10 +258,10 @@ def fit_weighted_l2(feats: np.ndarray, d: np.ndarray, train: np.ndarray) -> np.n
 
 def train_embedder(inputs: np.ndarray, d: np.ndarray, train: np.ndarray, seed: int, epochs: int = 300):
     import torch
-    from app.eval.fingerprint_embedding import FingerprintEmbedder, embed
+    from app.eval.fingerprint_embedding import FingerprintEmbedder, embed, input_stats
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    mean, std = inputs[train].mean(axis=0), inputs[train].std(axis=0) + 1e-3
+    mean, std = input_stats(inputs[train])
     x = torch.from_numpy(((inputs - mean) / std).astype(np.float32))
     target = torch.from_numpy(d)
     model = FingerprintEmbedder(inputs.shape[1])
@@ -270,6 +282,43 @@ def train_embedder(inputs: np.ndarray, d: np.ndarray, train: np.ndarray, seed: i
     return model, mean, std, embed(model, inputs, mean, std)
 
 
+def train_embedder_rank(inputs: np.ndarray, d: np.ndarray, train: np.ndarray, seed: int, steps: int = 3000,
+                        rank_weight: float = 1.0, tau: float = 1.0):
+    """
+    Регрессия расстояния + listwise-ранжирование (ListNet по строкам матрицы): для каждого якоря распределение
+    softmax(−d/τ) по остальным обучающим эффектам должно совпадать с softmax(−d̂/τ). При τ ≈ 1 дБ вес почти весь
+    у ближайших соседей — именно их порядок нужен адаптеру («какой режим ближе всех»), а регрессия держит
+    глобальный масштаб. Полный батч: обучающих эффектов ~300, матрица 300×300 дешевле выборки пар.
+    """
+    import torch
+    from app.eval.fingerprint_embedding import FingerprintEmbedder, embed, input_stats
+    torch.manual_seed(seed)
+    mean, std = input_stats(inputs[train])
+    x_all = torch.from_numpy(((inputs - mean) / std).astype(np.float32))
+    x = x_all[torch.from_numpy(train)]
+    t = torch.from_numpy(d[np.ix_(train, train)])
+    n = len(train)
+    eye = torch.eye(n, dtype=torch.bool)
+    iu = torch.triu_indices(n, n, offset=1)
+    target = torch.softmax((-t / tau).masked_fill(eye, -1e9), dim=1)
+    model = FingerprintEmbedder(inputs.shape[1])
+    opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
+    for _ in range(steps):
+        model.train()
+        e = model(x)
+        dist = torch.sqrt(((e[:, None, :] - e[None, :, :]) ** 2).sum(dim=2) + 1e-6)
+        reg = torch.nn.functional.smooth_l1_loss(dist[iu[0], iu[1]], t[iu[0], iu[1]])
+        logp = torch.log_softmax((-dist / tau).masked_fill(eye, -1e9), dim=1)
+        rank = -(target * logp).sum(dim=1).mean() + (target * torch.log(target + 1e-12)).sum(dim=1).mean()
+        loss = reg + rank_weight * rank
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        sched.step()
+    return model, mean, std, embed(model, inputs, mean, std)
+
+
 def train(args) -> None:
     from app.eval.effect_fingerprint import fingerprint_distance
     from app.eval.fingerprint_embedding import save_embedder
@@ -279,11 +328,10 @@ def train(args) -> None:
     n = len(metas)
     print(f"эффектов: {n} (dsp {np.sum(groups == 'dsp')}, sm {np.sum(groups == 'sm')}, "
           f"sm_default {np.sum(groups == 'sm_default')})")
-    d = pair_targets(mels)
-    hand = np.zeros((n, n), dtype=np.float32)
-    for a in range(n):
-        for b in range(a + 1, n):
-            hand[a, b] = hand[b, a] = fingerprint_distance(metas[a]["fingerprint"], metas[b]["fingerprint"])
+    d = cached_pair_targets(mels)
+    # fingerprint_distance = RMS разности fingerprint_vector — то же самое векторно
+    hand = np.sqrt(((feats[:, None, :] - feats[None, :, :]) ** 2).mean(axis=2)).astype(np.float32)
+    assert np.isclose(hand[0, 1], fingerprint_distance(metas[0]["fingerprint"], metas[1]["fingerprint"]), atol=1e-4)
 
     rng = np.random.default_rng(args.seed)
     not_default = np.nonzero(groups != "sm_default")[0]
@@ -311,13 +359,18 @@ def train(args) -> None:
         row["weighted_l2"] = {"spearman": spearman(wl2[pi, pj], true), "nn_rank": nn_rank(wl2, d, te)}
         sp, rk = [], []
         for seed in range(args.seeds):
-            model, mean, std, e = train_embedder(inputs, d, tr, seed, epochs=args.epochs)
+            if args.loss == "rank":
+                model, mean, std, e = train_embedder_rank(inputs, d, tr, seed, steps=args.steps,
+                                                          rank_weight=args.rank_weight, tau=args.tau)
+            else:
+                model, mean, std, e = train_embedder(inputs, d, tr, seed, epochs=args.epochs)
             emb = np.sqrt(((e[:, None, :] - e[None, :, :]) ** 2).sum(axis=2))
             sp.append(spearman(emb[pi, pj], true))
             rk.append(nn_rank(emb, d, te))
             if name == "sm_default" and seed == 0:
-                save_embedder(OUT / "embedder.pt", model, mean, std,
-                              {"train": "all except sm_default", "epochs": args.epochs})
+                save_embedder(OUT / args.model_name, model, mean, std,
+                              {"train": "all except sm_default", "loss": args.loss, "epochs": args.epochs,
+                               "steps": args.steps, "rank_weight": args.rank_weight, "tau": args.tau})
         row["embedding"] = {"spearman": float(np.mean(sp)), "spearman_std": float(np.std(sp)),
                             "nn_rank": float(np.mean(rk)), "per_seed": sp}
         report["splits"][name] = row
@@ -325,8 +378,9 @@ def train(args) -> None:
         for key in ("hand", "weighted_l2", "embedding"):
             extra = f" ± {row[key]['spearman_std']:.3f}" if key == "embedding" else ""
             print(f"  {key:<12} Spearman {row[key]['spearman']:.3f}{extra}   ранг соседа {row[key]['nn_rank']:.2f}")
-    (OUT / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\n[+] {OUT / 'report.json'}")
+    report["loss"] = {"loss": args.loss, "rank_weight": args.rank_weight, "tau": args.tau, "steps": args.steps}
+    (OUT / args.report_name).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"\n[+] {OUT / args.report_name}")
 
 
 def main() -> None:
@@ -341,6 +395,13 @@ def main() -> None:
     t.add_argument("--seeds", type=int, default=3)
     t.add_argument("--epochs", type=int, default=300)
     t.add_argument("--seed", type=int, default=0)
+    t.add_argument("--loss", choices=("regress", "rank"), default="regress",
+                   help="regress — только регрессия расстояния по парам; rank — + listwise по ближайшим")
+    t.add_argument("--steps", type=int, default=3000, help="шаги полного батча для --loss rank")
+    t.add_argument("--rank-weight", type=float, default=1.0)
+    t.add_argument("--tau", type=float, default=1.0, help="температура listwise, дБ log-mel")
+    t.add_argument("--model-name", default="embedder.pt")
+    t.add_argument("--report-name", default="report.json")
     args = parser.parse_args()
     generate(args) if args.cmd == "generate" else train(args)
 
