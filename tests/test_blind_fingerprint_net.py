@@ -70,3 +70,16 @@ def test_rhythmic_chop_is_periodic_and_keeps_length():
     # Есть и звук, и паузы между кусками
     active = np.abs(out) > 1e-4
     assert 0.05 < active.mean() < 0.95
+
+
+def test_mix_wrapper_blends_and_none_is_identity():
+    from scripts.train_blind_fingerprint import effect_for, none_fingerprint
+    x = np.random.default_rng(0).standard_normal((2, 4800)).astype(np.float32) * 0.1
+    inner = {"kind": "dsp", "plugins": [{"name": "delay", "params": {"delay_seconds": 0.1, "feedback": 0.0,
+                                                                      "mix": 1.0, "high_cut_hz": 1.0}}]}
+    full = effect_for(inner)(x, 48000)
+    blend = effect_for({"kind": "mix", "wet": 0.25, "inner": inner})(x, 48000)
+    assert np.allclose(blend, x + 0.25 * (full[:, : x.shape[1]] - x), atol=1e-5)
+    assert np.array_equal(effect_for({"kind": "mix", "wet": 0.0, "inner": None})(x, 48000), x)
+    fp = none_fingerprint()
+    assert fp["rt60_1000"] == 0.05 and fp["drr_db"] >= 40 and fp["side_mid_db"] <= -60

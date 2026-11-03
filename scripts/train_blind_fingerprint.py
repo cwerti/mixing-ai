@@ -4,6 +4,7 @@
     python scripts/train_blind_fingerprint.py drys
     python scripts/train_blind_fingerprint.py generate --kind dsp --workers 6
     python scripts/train_blind_fingerprint.py generate --kind sm --workers 8
+    python scripts/train_blind_fingerprint.py generate --kind mix --workers 9
     python scripts/train_blind_fingerprint.py train
     python scripts/train_blind_fingerprint.py real
 
@@ -41,6 +42,10 @@ OUT = Path("data/runs/fingerprint/blind_net")
 EMB = Path("data/runs/fingerprint/embedding/effects")
 CAMBRIDGE = Path("data/raw/dry_vocals/cambridge")
 HELD_MODES = ("Hydra", "Cirrus Major", "Orion", "Pleiades")
+N_LOW_MIX = 400   # эффекты на малом mix: в инженерных миксах ревер на вокале часто едва слышен
+N_NONE = 40       # «без эффекта»: без них сеть описывает сухой как заметно мокрый (DRR ≈ 10 дБ, Cambridge)
+LOW_MIX = (0.04, 0.4)
+NONE_RT60_S = 0.05  # нижняя граница log-шкалы RT60: «хвоста нет»
 K_TRAIN = {"dsp": 6, "sm": 3}
 
 
@@ -186,11 +191,59 @@ def effect_list(n_new_dsp: int, seed: int) -> list[dict]:
             e["split"] = "train"  # 22 режима по умолчанию — обучение; их отложенная часть уже в held_mode
         else:
             e["split"] = "test" if _is_b("effect:" + e["id"]) else "train"
+    return out + mix_variants(out, seed)
+
+
+def mix_variants(effects: list[dict], seed: int) -> list[dict]:
+    """
+    Эффекты «на малом mix» (выход = сухой + a·(эффект − сухой), a лог-равномерно в LOW_MIX) и «без эффекта» (a = 0).
+    Внутренний эффект берется вместе с его сплитом; целиком отложенные режимы не берутся.
+    """
+    rng = random.Random(seed + 1)
+    pool = [e for e in effects if e["split"] != "held_mode"]
+    out = []
+    for i in range(N_LOW_MIX):
+        inner = rng.choice(pool)
+        wet = float(np.exp(rng.uniform(np.log(LOW_MIX[0]), np.log(LOW_MIX[1]))))
+        out.append({"id": f"mix{i:05d}", "group": "low_mix", "fingerprint": None,
+                    "spec": {"kind": "mix", "wet": wet, "inner_id": inner["id"], "inner": inner["spec"]},
+                    "split": inner["split"]})
+    for i in range(N_NONE):
+        e_id = f"none{i:03d}"
+        out.append({"id": e_id, "group": "none", "fingerprint": None, "spec": {"kind": "mix", "wet": 0.0, "inner": None},
+                    "split": "test" if _is_b("effect:" + e_id) else "train"})
     return out
 
 
-def process_effect(e: dict, rhythmic: bool = False) -> str:
+def none_fingerprint() -> dict:
+    """Отпечаток тождества с явными «хвоста нет» и «ширины нет»: иначе они не определены и сеть их не учит."""
+    from app.eval.blind_fingerprint_net import KEYS
+    from app.eval.effect_fingerprint import _DB_FLOOR, fingerprint
+    fp = fingerprint(lambda x, sr: x, sr=48000, ir_seconds=8.0)
+    fp |= {k: NONE_RT60_S for k in KEYS if k.startswith("rt60_")} | {"side_mid_db": _DB_FLOOR, "predelay_ms": 0.0}
+    return fp
+
+
+def effect_for(spec: dict):
     from scripts.train_fingerprint_embedding import build_effect
+    if spec["kind"] != "mix":
+        return build_effect(spec)
+    if spec["inner"] is None:
+        return lambda x, sr: x
+    inner, wet = build_effect(spec["inner"]), spec["wet"]
+
+    def blend(x, sr):
+        from app.eval.effect_fingerprint import _render
+        return x + wet * (_render(inner, x, sr) - x)
+    return blend
+
+
+def _render_kind(spec: dict) -> str:
+    inner = spec["inner"] if spec["kind"] == "mix" else spec
+    return "sm" if inner is not None and inner["kind"] == "vst" else "dsp"
+
+
+def process_effect(e: dict, rhythmic: bool = False) -> str:
     from app.eval.blind_fingerprint import blind_fingerprint
     from app.eval.blind_fingerprint_net import wet_features
     from app.eval.effect_fingerprint import _render, fingerprint
@@ -198,15 +251,18 @@ def process_effect(e: dict, rhythmic: bool = False) -> str:
     if path.exists():
         return "skip"
     t0 = time.time()
-    effect = build_effect(e["spec"])
+    effect = effect_for(e["spec"])
     base = OUT / "renders" / f"{e['id']}.npz"
     if not e["fingerprint"] and base.exists():  # отпечаток новых DSP уже снят в обычной генерации
         e["fingerprint"] = json.loads(str(np.load(base)["meta"]))["fingerprint"]
-    fp = e["fingerprint"] or fingerprint(effect, sr=48000, ir_seconds=8.0)
+    if e["group"] == "none":
+        fp = none_fingerprint()
+    else:
+        fp = e["fingerprint"] or fingerprint(effect, sr=48000, ir_seconds=8.0)
     audio, split = _drys()
     rng = random.Random(e["id"] + ("__rh" if rhythmic else ""))
     a_idx, b_idx = np.nonzero(split == "A")[0].tolist(), np.nonzero(split == "B")[0].tolist()
-    kind = "sm" if e["spec"]["kind"] == "vst" else "dsp"
+    kind = _render_kind(e["spec"])
     if rhythmic:  # ритмичный вариант — дополнение: 1 сухой A на обучающий эффект, A и B на отложенный
         picks = [(rng.choice(a_idx), "A")] + ([] if e["split"] == "train" else [(rng.choice(b_idx), "B")])
     elif e["split"] == "train":
@@ -247,7 +303,7 @@ def process_effect(e: dict, rhythmic: bool = False) -> str:
 def generate(args) -> None:
     (OUT / "renders").mkdir(parents=True, exist_ok=True)
     effects = effect_list(args.new_dsp, args.seed)
-    want = "vst" if args.kind == "sm" else "dsp"
+    want = {"sm": "vst", "dsp": "dsp", "mix": "mix"}[args.kind]
     suffix = "__rh" if args.rhythmic else ""
     jobs = [e for e in effects
             if e["spec"]["kind"] == want and not (OUT / "renders" / f"{e['id']}{suffix}.npz").exists()]
@@ -387,6 +443,9 @@ EVAL_KEYS = ("side_mid_db", "iacc_late", "iacc_early", "rt60_s", "rt60_125", "rt
              "mod_spread_db", "ir_repeatability", "pitch_up_db", "saturation_db")
 
 
+MEDIAN_KEYS = ("drr_db", "rt60_1000", "predelay_ms", "side_mid_db")
+
+
 def evaluate(preds: list[dict], infos: list[dict]) -> dict:
     """Spearman по признакам (сеть и ручной оценщик на тех же рендерах), попадание периода ±10 мс."""
     res = {}
@@ -413,6 +472,10 @@ def evaluate(preds: list[dict], infos: list[dict]) -> dict:
     has = np.array([float(i["fp"].get("echo_strength", 0) or 0) > 0.5 for i in infos])
     prob = np.array([p["echo_prob"] for p in preds])
     res["echo_detect_acc"] = float(np.mean((prob > 0.5) == has)) if len(has) else float("nan")
+    # Медианы предсказаний и истины: у «без эффекта» истина постоянна и Spearman не определен
+    res["median"] = {k: {"net": float(np.nanmedian([p.get(k, np.nan) for p in preds])),
+                         "true": float(np.nanmedian([np.nan if i["fp"].get(k) is None else i["fp"][k] for i in infos]))}
+                     for k in MEDIAN_KEYS}
     return res
 
 
@@ -425,6 +488,9 @@ def train(args) -> None:
     split = np.array([i["split"] for i in info])
     dry = np.array([i["dry_split"] for i in info])
     rhythm = np.array([i["rhythmic"] for i in info], dtype=bool)
+    grp = np.array([i["group"] for i in info])
+    held = (split == "test") | (split == "held_mode")
+    new = (grp == "low_mix") | (grp == "none")
     train_all = np.nonzero((split == "train") & (dry == "A"))[0]
     rng = np.random.default_rng(0)
     # Валидация для ранней остановки — 10 % обучающих эффектов целиком (не рендеров)
@@ -432,18 +498,19 @@ def train(args) -> None:
     val_ids = set(rng.choice(ids, size=max(1, len(ids) // 10), replace=False).tolist())
     val_idx = np.array([k for k in train_all if info[k]["id"] in val_ids])
     train_idx = np.array([k for k in train_all if info[k]["id"] not in val_ids])
-    # Обычные группы — без ритмичных сухих, чтобы числа сравнивались с прошлыми отчетами
+    # Обычные группы — без ритмичных сухих и без малого mix / «без эффекта», чтобы числа сравнивались с прошлыми
+    base = ~rhythm & ~new
     groups = {
-        "эффекты отложены, вокалы A": np.nonzero((split == "test") & (dry == "A") & ~rhythm)[0],
-        "эффекты отложены, вокалы B": np.nonzero((split == "test") & (dry == "B") & ~rhythm)[0],
-        "эффекты из обучения, вокалы B": np.nonzero((split == "train") & (dry == "B") & ~rhythm)[0],
-        "режимы SM отложены": np.nonzero((split == "held_mode") & ~rhythm)[0],
-        "отложенные, только DSP": np.nonzero((split == "test") & ~rhythm
-                                             & np.array([i["group"] == "dsp" for i in info]))[0],
-        "отложенные, только SM": np.nonzero(((split == "test") | (split == "held_mode")) & ~rhythm
-                                            & np.array([i["group"] != "dsp" for i in info]))[0],
-        "отложенные, ритмичные сухие": np.nonzero(((split == "test") | (split == "held_mode")) & rhythm)[0],
-        "отложенные, обычные сухие": np.nonzero(((split == "test") | (split == "held_mode")) & ~rhythm)[0],
+        "эффекты отложены, вокалы A": np.nonzero((split == "test") & (dry == "A") & base)[0],
+        "эффекты отложены, вокалы B": np.nonzero((split == "test") & (dry == "B") & base)[0],
+        "эффекты из обучения, вокалы B": np.nonzero((split == "train") & (dry == "B") & base)[0],
+        "режимы SM отложены": np.nonzero((split == "held_mode") & base)[0],
+        "отложенные, только DSP": np.nonzero((split == "test") & base & (grp == "dsp"))[0],
+        "отложенные, только SM": np.nonzero(held & base & (grp != "dsp"))[0],
+        "отложенные, ритмичные сухие": np.nonzero(held & rhythm & ~new)[0],
+        "отложенные, обычные сухие": np.nonzero(held & base)[0],
+        "отложенные, малый mix": np.nonzero(held & (grp == "low_mix"))[0],
+        "без эффекта (все вокалы B и отложенные)": np.nonzero((grp == "none") & (held | (dry == "B")))[0],
     }
     print(f"[+] рендеров {len(info)}: обучение {len(train_idx)}, валидация {len(val_idx)}, "
           + ", ".join(f"{k} {len(v)}" for k, v in groups.items()), flush=True)
@@ -478,6 +545,10 @@ def print_report(report: dict) -> None:
         print(f"{'период ±10 мс':<18}{np.mean(ph):>8.0%} ±{np.std(ph):4.2f}{r0['period_hit']['hand']:>10.0%}"
               f"   (n={r0['period_hit']['n']})")
         print(f"{'повторы есть/нет':<18}{np.mean([s[name]['echo_detect_acc'] for s in seeds]):>8.0%}")
+        if "median" in r0:
+            print("медианы сеть/истина: " + ", ".join(
+                f"{k} {np.mean([s[name]['median'][k]['net'] for s in seeds]):.2f}/{r0['median'][k]['true']:.2f}"
+                for k in MEDIAN_KEYS))
 
 
 # ------------------------------------------------------------------------------------------------- реальные пары
@@ -524,7 +595,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("drys")
     g = sub.add_parser("generate")
-    g.add_argument("--kind", choices=("dsp", "sm"), required=True)
+    g.add_argument("--kind", choices=("dsp", "sm", "mix"), required=True)
     g.add_argument("--workers", type=int, default=6)
     g.add_argument("--new-dsp", type=int, default=500)
     g.add_argument("--seed", type=int, default=7)
