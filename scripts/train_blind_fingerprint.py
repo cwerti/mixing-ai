@@ -126,6 +126,45 @@ def augment(y: np.ndarray, rng: random.Random) -> np.ndarray:
     return Pedalboard(fx)(y, SR)
 
 
+def rhythmic_chop(y: np.ndarray, rng: random.Random) -> np.ndarray:
+    """
+    Ритмичный сухой из обычного: короткие куски (60–300 мс) по сетке с периодом 120–800 мс блоками с паузами —
+    нарезки, стаккато, речитатив. Без такого материала сеть принимает ритм исполнения за повторы дилея
+    (Whiptails: удары через 0.35 с → predelay 343 мс и «дилей» при гладком ревере в референсе).
+    С вероятностью 0.5 повторяется один и тот же кусок (вокальный чоп), иначе куски разные.
+    """
+    n = len(y)
+    frame = SR // 50
+    e = np.array([np.sum(y[i:i + frame] ** 2) for i in range(0, n - frame, frame)])
+    loud = np.nonzero(e > 0.1 * e.max())[0] if e.max() > 0 else np.array([0])
+    period = rng.uniform(0.12, 0.8)
+    length = min(rng.uniform(0.06, 0.3), 0.9 * period)
+    seg_n = int(length * SR)
+    fade = np.minimum(1.0, np.minimum(np.arange(seg_n), np.arange(seg_n)[::-1]) / (0.005 * SR))
+
+    def piece() -> np.ndarray:
+        start = int(rng.choice(loud.tolist())) * frame
+        seg = y[start:start + seg_n]
+        return np.pad(seg, (0, seg_n - len(seg))) * fade
+
+    same = piece() if rng.random() < 0.5 else None
+    jitter = rng.uniform(0.0, 0.01) if rng.random() < 0.5 else 0.0
+    out = np.zeros(n, dtype=np.float32)
+    t = rng.uniform(0.0, 0.5)
+    while t < SECONDS:
+        block_end = t + rng.uniform(1.5, 5.0)
+        while t < min(block_end, SECONDS):
+            a = int((t + rng.uniform(-jitter, jitter)) * SR)
+            if 0 <= a < n:
+                seg = same if same is not None else piece()
+                b = min(n, a + seg_n)
+                out[a:b] += seg[:b - a]
+            t += period
+        t += rng.uniform(0.8, 3.0)
+    peak = np.abs(out).max()
+    return out / peak * 0.7 if peak > 0 else out
+
+
 # ------------------------------------------------------------------------------------------------- генерация
 
 def effect_list(n_new_dsp: int, seed: int) -> list[dict]:
@@ -150,35 +189,40 @@ def effect_list(n_new_dsp: int, seed: int) -> list[dict]:
     return out
 
 
-def process_effect(e: dict) -> str:
+def process_effect(e: dict, rhythmic: bool = False) -> str:
     from scripts.train_fingerprint_embedding import build_effect
     from app.eval.blind_fingerprint import blind_fingerprint
     from app.eval.blind_fingerprint_net import wet_features
     from app.eval.effect_fingerprint import _render, fingerprint
-    path = OUT / "renders" / f"{e['id']}.npz"
+    path = OUT / "renders" / (f"{e['id']}__rh.npz" if rhythmic else f"{e['id']}.npz")
     if path.exists():
         return "skip"
     t0 = time.time()
     effect = build_effect(e["spec"])
+    base = OUT / "renders" / f"{e['id']}.npz"
+    if not e["fingerprint"] and base.exists():  # отпечаток новых DSP уже снят в обычной генерации
+        e["fingerprint"] = json.loads(str(np.load(base)["meta"]))["fingerprint"]
     fp = e["fingerprint"] or fingerprint(effect, sr=48000, ir_seconds=8.0)
     audio, split = _drys()
-    rng = random.Random(e["id"])
+    rng = random.Random(e["id"] + ("__rh" if rhythmic else ""))
     a_idx, b_idx = np.nonzero(split == "A")[0].tolist(), np.nonzero(split == "B")[0].tolist()
     kind = "sm" if e["spec"]["kind"] == "vst" else "dsp"
-    if e["split"] == "train":
+    if rhythmic:  # ритмичный вариант — дополнение: 1 сухой A на обучающий эффект, A и B на отложенный
+        picks = [(rng.choice(a_idx), "A")] + ([] if e["split"] == "train" else [(rng.choice(b_idx), "B")])
+    elif e["split"] == "train":
         picks = [(i, "A") for i in rng.sample(a_idx, K_TRAIN[kind])] + [(rng.choice(b_idx), "B")]
     else:
         picks = [(i, "A") for i in rng.sample(a_idx, 2)] + [(i, "B") for i in rng.sample(b_idx, 2)]
     mels, acfs, rows = [], [], []
     for dry_i, dry_split in picks:
-        y = augment(audio[dry_i], rng)
+        y = augment(rhythmic_chop(audio[dry_i], rng) if rhythmic else audio[dry_i], rng)
         wet = _render(effect, np.stack([y, y]), SR)
         if not np.isfinite(wet).all() or np.abs(wet).max() < 1e-6:
             continue
         mel, acf = wet_features(wet, SR)
         mels.append(mel.astype(np.float16))
         acfs.append(acf)
-        row = {"dry": int(dry_i), "dry_split": dry_split}
+        row = {"dry": int(dry_i), "dry_split": dry_split, "rhythmic": rhythmic}
         if e["split"] != "train" or dry_split == "B":
             try:
                 row["blind"] = blind_fingerprint(wet, SR)
@@ -204,14 +248,16 @@ def generate(args) -> None:
     (OUT / "renders").mkdir(parents=True, exist_ok=True)
     effects = effect_list(args.new_dsp, args.seed)
     want = "vst" if args.kind == "sm" else "dsp"
-    jobs = [e for e in effects if e["spec"]["kind"] == want and not (OUT / "renders" / f"{e['id']}.npz").exists()]
+    suffix = "__rh" if args.rhythmic else ""
+    jobs = [e for e in effects
+            if e["spec"]["kind"] == want and not (OUT / "renders" / f"{e['id']}{suffix}.npz").exists()]
     if args.limit:
         jobs = jobs[:args.limit]
     random.Random(os.getpid()).shuffle(jobs)  # параллельные прогоны идут в разном порядке и реже пересекаются
     print(f"[+] {args.kind}: заданий {len(jobs)}, процессов {args.workers}", flush=True)
     t0, done = time.time(), 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(process_effect, e): e["id"] for e in jobs}
+        futures = {pool.submit(process_effect, e, args.rhythmic): e["id"] for e in jobs}
         for fut in as_completed(futures):
             done += 1
             try:
@@ -245,7 +291,8 @@ def load_renders(lag_sim: bool = False):
             periods.append(per)
             mode = meta["spec"].get("params", {}).get("mode")
             info.append({"id": meta["id"], "group": meta["group"], "split": meta["split"], "mode": mode,
-                         "dry_split": row["dry_split"], "blind": row.get("blind"), "fp": meta["fingerprint"]})
+                         "dry_split": row["dry_split"], "blind": row.get("blind"), "fp": meta["fingerprint"],
+                         "rhythmic": bool(row.get("rhythmic", False))})
     return (np.stack(mels), np.stack(acfs), np.stack(vecs), np.stack(masks), np.array(has, np.float32),
             np.stack(periods), info)
 
@@ -377,6 +424,7 @@ def train(args) -> None:
     info = data[-1]
     split = np.array([i["split"] for i in info])
     dry = np.array([i["dry_split"] for i in info])
+    rhythm = np.array([i["rhythmic"] for i in info], dtype=bool)
     train_all = np.nonzero((split == "train") & (dry == "A"))[0]
     rng = np.random.default_rng(0)
     # Валидация для ранней остановки — 10 % обучающих эффектов целиком (не рендеров)
@@ -384,14 +432,18 @@ def train(args) -> None:
     val_ids = set(rng.choice(ids, size=max(1, len(ids) // 10), replace=False).tolist())
     val_idx = np.array([k for k in train_all if info[k]["id"] in val_ids])
     train_idx = np.array([k for k in train_all if info[k]["id"] not in val_ids])
+    # Обычные группы — без ритмичных сухих, чтобы числа сравнивались с прошлыми отчетами
     groups = {
-        "эффекты отложены, вокалы A": np.nonzero((split == "test") & (dry == "A"))[0],
-        "эффекты отложены, вокалы B": np.nonzero((split == "test") & (dry == "B"))[0],
-        "эффекты из обучения, вокалы B": np.nonzero((split == "train") & (dry == "B"))[0],
-        "режимы SM отложены": np.nonzero(split == "held_mode")[0],
-        "отложенные, только DSP": np.nonzero((split == "test") & np.array([i["group"] == "dsp" for i in info]))[0],
-        "отложенные, только SM": np.nonzero(((split == "test") | (split == "held_mode"))
+        "эффекты отложены, вокалы A": np.nonzero((split == "test") & (dry == "A") & ~rhythm)[0],
+        "эффекты отложены, вокалы B": np.nonzero((split == "test") & (dry == "B") & ~rhythm)[0],
+        "эффекты из обучения, вокалы B": np.nonzero((split == "train") & (dry == "B") & ~rhythm)[0],
+        "режимы SM отложены": np.nonzero((split == "held_mode") & ~rhythm)[0],
+        "отложенные, только DSP": np.nonzero((split == "test") & ~rhythm
+                                             & np.array([i["group"] == "dsp" for i in info]))[0],
+        "отложенные, только SM": np.nonzero(((split == "test") | (split == "held_mode")) & ~rhythm
                                             & np.array([i["group"] != "dsp" for i in info]))[0],
+        "отложенные, ритмичные сухие": np.nonzero(((split == "test") | (split == "held_mode")) & rhythm)[0],
+        "отложенные, обычные сухие": np.nonzero(((split == "test") | (split == "held_mode")) & ~rhythm)[0],
     }
     print(f"[+] рендеров {len(info)}: обучение {len(train_idx)}, валидация {len(val_idx)}, "
           + ", ".join(f"{k} {len(v)}" for k, v in groups.items()), flush=True)
@@ -477,6 +529,7 @@ def main() -> None:
     g.add_argument("--new-dsp", type=int, default=500)
     g.add_argument("--seed", type=int, default=7)
     g.add_argument("--limit", type=int, default=0)
+    g.add_argument("--rhythmic", action="store_true", help="ритмичные сухие (rhythmic_chop) — renders/<id>__rh.npz")
     t = sub.add_parser("train")
     t.add_argument("--epochs", type=int, default=40)
     t.add_argument("--seeds", type=int, default=3)

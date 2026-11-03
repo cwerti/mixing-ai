@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from real_pairs import align, find_lag, logmel_db  # noqa: E402
-from app.eval.blind_fingerprint_net import KEYS, SECONDS, SR, load_model, predict, target_vector  # noqa: E402
+from app.eval.blind_fingerprint_net import SR, load_model  # noqa: E402
+from app.eval.reference_match import RELIABLE, blind_estimate, description_distance  # noqa: E402
 from app.eval.plugin_adapter import SM_MODES, fast_fingerprint, sm_render  # noqa: E402
 from app.mixing.chain_optimizer import normalize_lufs, to_stereo  # noqa: E402
 
@@ -34,26 +35,13 @@ WET = RAW / "Albert_Kader_Whiptails_12_Vox_Wet.wav"
 POOL = Path("data/runs/fingerprint/embedding/effects")
 NET = Path("data/runs/fingerprint/blind_net/blind_net.pt")
 OUT = Path("data/processed/listen_blind_sm/whiptails")
-# Признаки, которые сеть восстанавливает на отложенных эффектах со Spearman ≥ ~0.6 (blind_fingerprint_net.md)
-RELIABLE = ("rt60_125", "rt60_250", "rt60_500", "rt60_1000", "rt60_2000", "rt60_4000", "rt60_8000",
-            "predelay_ms", "drr_db", "side_mid_db", "iacc_late")
 LUFS = -18.0
 
 
-# Вес признаков в расстоянии: семь полос RT60 вместе весят как два признака, иначе длина хвоста забивает баланс
-# сухой/мокрый и ширину (первый прогон выбрал mix 79 при DRR референса 14 дБ)
-WEIGHTS = np.array([2.0 / 7] * 7 + [1.0] * 4)
 # Чистая сетка: без модуляции и warp (у случайных настроек набора они дают «плавающие» посторонние звуки),
 # низкий mix — у референса громкий сухой сигнал
 CLEAN_FEEDBACK = (40.0, 60.0, 75.0, 85.0)
 CLEAN_MIX = (8.0, 15.0, 25.0)
-
-
-def blind_distance(fp: dict, target: np.ndarray) -> float:
-    vec, mask = target_vector(fp)
-    idx = [KEYS.index(k) for k in RELIABLE]
-    w = WEIGHTS * mask[idx]
-    return float(np.sqrt(np.sum(w * (vec[idx] - target[idx]) ** 2) / max(w.sum(), 1e-9)))
 
 
 def _fast_job(params: dict) -> dict:
@@ -80,14 +68,6 @@ def loud(y: np.ndarray) -> np.ndarray:
     return y * (0.89 / peak) if peak > 0.89 else y
 
 
-def blind_estimate(wet: np.ndarray) -> dict:
-    model = load_model(NET)
-    n = int(SECONDS * SR)
-    starts = range(0, max(1, wet.shape[1] - n + 1), SR)
-    preds = [predict(model, wet[:, s:s + n], SR) for s in starts]
-    return {k: float(np.median([p[k] for p in preds])) for k in preds[0]}
-
-
 def pool_sm() -> list[dict]:
     rows = []
     for path in sorted(POOL.glob("*.npz")):
@@ -112,15 +92,14 @@ def main() -> None:
     dry, wet = align(dry, wet, lag)
     dry_in = normalize_lufs(dry, SR, LUFS)
 
-    est = blind_estimate(wet)
-    target, _ = target_vector(est)
+    est = blind_estimate(load_model(NET), wet)
     pool = pool_sm()
-    blind_i = int(np.argmin([blind_distance(m["fingerprint"], target) for m in pool]))
+    blind_i = int(np.argmin([description_distance(m["fingerprint"], est) for m in pool]))
     grid = clean_grid(est)
     print(f"отпечатки чистой сетки: {len(grid)} настроек...", flush=True)
     with ProcessPoolExecutor(args.workers) as ex:
         grid_fps = list(ex.map(_fast_job, grid))
-    clean = grid[int(np.argmin([blind_distance(fp, target) for fp in grid_fps]))]
+    clean = grid[int(np.argmin([description_distance(fp, est) for fp in grid_fps]))]
 
     print(f"рендер {len(pool)} готовых эффектов Supermassive на сухом ({args.workers} процессов)...", flush=True)
     with ProcessPoolExecutor(args.workers) as ex:

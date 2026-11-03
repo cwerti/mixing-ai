@@ -55,3 +55,18 @@ def test_model_forward_and_predict_are_deterministic():
     wet = np.stack([_pulses(), _pulses()])
     a, b = predict(model, wet, SR), predict(model, wet, SR)
     assert a == b and 0.0 <= a["echo_prob"] <= 1.0 and set(KEYS) <= set(a)
+
+
+def test_rhythmic_chop_is_periodic_and_keeps_length():
+    import random
+
+    from scripts.train_blind_fingerprint import SECONDS, rhythmic_chop
+    sr = SR
+    t = np.arange(int(SECONDS * sr)) / sr
+    dry = (np.sin(2 * np.pi * 220 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 0.7 * t))).astype(np.float32)
+    out = rhythmic_chop(dry, random.Random(3))
+    assert out.shape == dry.shape
+    assert 0.0 < np.abs(out).max() <= 0.7 + 1e-6
+    # Есть и звук, и паузы между кусками
+    active = np.abs(out) > 1e-4
+    assert 0.05 < active.mean() < 0.95

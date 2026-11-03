@@ -70,12 +70,34 @@ def unit_to_params(mode: str, u: np.ndarray) -> dict:
     return out
 
 
+PRESET_META_KEYS = ("raw", "preset")
+
+
+def load_vpreset(path) -> dict:
+    """
+    Пресет Valhalla (.vpreset, XML с нормализованными 0..1 значениями) → {"preset": имя, "raw": {параметр: 0..1}}.
+    Нормализованные значения выставляются как есть (raw_value): так точно воспроизводятся и дискретные ручки
+    (режим, синхронизация, нота), без перевода в единицы плагина.
+    """
+    import xml.etree.ElementTree as ET
+    attrs = ET.parse(path).getroot().attrib
+    raw = {k.lower(): float(v) for k, v in attrs.items() if k not in ("pluginVersion", "presetName")
+           and not k.lower().startswith("reserved")}
+    return {"preset": attrs.get("presetName", str(path)), "raw": raw}
+
+
 def sm_render(params: dict, x: np.ndarray, sr: int) -> np.ndarray:
-    """Рендер свежим экземпляром Supermassive (детерминированно, в отличие от повторного process)."""
+    """
+    Рендер свежим экземпляром Supermassive (детерминированно, в отличие от повторного process). params — значения
+    в единицах плагина; ключ "raw" — нормализованные значения пресета (выставляются первыми, остальные ключи поверх).
+    """
     import pedalboard
     plugin = pedalboard.load_plugin(SM_PATH)
+    for key, value in params.get("raw", {}).items():
+        plugin.parameters[key].raw_value = value
     for key, value in params.items():
-        setattr(plugin, key, value)
+        if key not in PRESET_META_KEYS:
+            setattr(plugin, key, value)
     return plugin.process(x.astype(np.float32), sr, reset=True)
 
 

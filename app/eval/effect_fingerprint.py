@@ -261,7 +261,29 @@ def impulse_features(h: np.ndarray, sr: int) -> dict:
     late = slice(start + int(0.08 * sr), min(alive_end, start + int(1.0 * sr)))
     f["iacc_early"] = _iacc(tail[0][early], tail[1][early], sr)
     f["iacc_late"] = _iacc(tail[0][late], tail[1][late], sr) if late.stop > late.start + d else f["iacc_early"]
+    f["tail_peak_db"] = tail_peakiness(tail_mid[start + int(0.3 * sr):min(alive_end, start + int(3.3 * sr))], sr)
     return f
+
+
+def tail_peakiness(seg: np.ndarray, sr: int, lo_hz: float = 150.0, hi_hz: float = 5000.0) -> float | None:
+    """
+    Тональность позднего хвоста: насколько спектр (Уэлч) выступает над своим сглаженным (1/3 октавы) вариантом —
+    максимум в дБ (у звенящего хвоста выступает лишь несколько полос из сотен, перцентиль их не видит).
+    Входных нот здесь нет (отклик на импульс), поэтому это свойство эффекта, а не исполнения.
+    """
+    from scipy.signal import welch
+    if len(seg) < int(0.5 * sr):
+        return None
+    freqs, psd = welch(seg, fs=sr, nperseg=8192)
+    band = (freqs >= lo_hz) & (freqs <= hi_hz)
+    if not np.any(psd[band] > 0):
+        return None
+    db = 10.0 * np.log10(psd + 1e-30)
+    smooth = np.empty_like(db)
+    for i, fr in enumerate(freqs):
+        win = (freqs >= fr * 2 ** (-1 / 6)) & (freqs <= fr * 2 ** (1 / 6))
+        smooth[i] = np.median(db[win]) if np.any(win) else db[i]
+    return float(np.max((db - smooth)[band]))
 
 
 def sine_features(outputs: dict[float, np.ndarray], sr: int, levels_db: dict[float, float]) -> dict:

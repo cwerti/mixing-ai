@@ -83,3 +83,16 @@ def test_long_tail_rerenders_with_longer_window():
     f = fingerprint(_reverb(8.0, 0.5), **FAST)
     assert f["ir_seconds"] == 9.0
     assert 6.5 < f["rt60_1000"] < 10.0
+
+
+def test_tail_peakiness_separates_diffuse_and_ringing_tails():
+    from app.eval.effect_fingerprint import tail_peakiness
+    sr = 48000
+    rng = np.random.default_rng(0)
+    t = np.arange(2 * sr) / sr
+    env = np.exp(-t / 0.6)
+    diffuse = rng.standard_normal(t.size) * env
+    ringing = (np.sin(2 * np.pi * 440 * t) + np.sin(2 * np.pi * 660 * t)) * env + 0.01 * diffuse
+    assert tail_peakiness(diffuse, sr) < 8.0
+    assert tail_peakiness(ringing, sr) > 15.0
+    assert tail_peakiness(diffuse[: sr // 4], sr) is None

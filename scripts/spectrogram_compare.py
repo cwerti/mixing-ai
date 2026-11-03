@@ -30,12 +30,9 @@ def mel_db(y: np.ndarray, sr: int) -> np.ndarray:
     return librosa.power_to_db(m, ref=1.0, amin=1e-10)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("folder", type=Path)
-    args = parser.parse_args()
-
-    files = sorted(args.folder.glob("*.wav"))
+def compare(folder: Path) -> Path:
+    """Спектрограммы и сводка по всем wav папки; возвращает путь к png."""
+    files = sorted(folder.glob("*.wav"))
     audio = {}
     for f in files:
         y, sr = sf.read(f, dtype="float32", always_2d=True)
@@ -67,9 +64,17 @@ def main() -> None:
         sm = 10 * np.log10((side ** 2).sum() / max((mid ** 2).sum(), 1e-12) + 1e-12)
         print(f"{name:<36}{tail:>13.1f} дБ{100 * hi:>8.1f}%{sm:>8.1f} дБ")
     fig.tight_layout()
-    out = args.folder / "spectrograms.png"
+    out = folder / "spectrograms.png"
     fig.savefig(out, dpi=80)
+    plt.close(fig)
     print(f"[+] {out}")
+    return out
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("folder", type=Path)
+    compare(parser.parse_args().folder)
 
 
 if __name__ == "__main__":
