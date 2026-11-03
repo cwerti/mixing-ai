@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from real_pairs import align, find_lag, logmel_db  # noqa: E402
 from app.eval.blind_fingerprint_net import KEYS, SECONDS, SR, load_model, predict, target_vector  # noqa: E402
-from app.eval.plugin_adapter import sm_render  # noqa: E402
+from app.eval.plugin_adapter import SM_MODES, fast_fingerprint, sm_render  # noqa: E402
 from app.mixing.chain_optimizer import normalize_lufs, to_stereo  # noqa: E402
 
 RAW = Path("data/raw/dry_vocals/cambridge")
@@ -38,6 +38,33 @@ OUT = Path("data/processed/listen_blind_sm/whiptails")
 RELIABLE = ("rt60_125", "rt60_250", "rt60_500", "rt60_1000", "rt60_2000", "rt60_4000", "rt60_8000",
             "predelay_ms", "drr_db", "side_mid_db", "iacc_late")
 LUFS = -18.0
+
+
+# Вес признаков в расстоянии: семь полос RT60 вместе весят как два признака, иначе длина хвоста забивает баланс
+# сухой/мокрый и ширину (первый прогон выбрал mix 79 при DRR референса 14 дБ)
+WEIGHTS = np.array([2.0 / 7] * 7 + [1.0] * 4)
+# Чистая сетка: без модуляции и warp (у случайных настроек набора они дают «плавающие» посторонние звуки),
+# низкий mix — у референса громкий сухой сигнал
+CLEAN_FEEDBACK = (40.0, 60.0, 75.0, 85.0)
+CLEAN_MIX = (8.0, 15.0, 25.0)
+
+
+def blind_distance(fp: dict, target: np.ndarray) -> float:
+    vec, mask = target_vector(fp)
+    idx = [KEYS.index(k) for k in RELIABLE]
+    w = WEIGHTS * mask[idx]
+    return float(np.sqrt(np.sum(w * (vec[idx] - target[idx]) ** 2) / max(w.sum(), 1e-9)))
+
+
+def _fast_job(params: dict) -> dict:
+    return fast_fingerprint(lambda x, sr: sm_render(params, x, sr))[0]
+
+
+def clean_grid(est: dict) -> list[dict]:
+    return [{"mode": mode, "delaysync": "Msec", "delay_ms": float(np.clip(est["predelay_ms"], 0.0, 1000.0)),
+             "feedback": fb, "mix": mix, "density": 100.0, "width": 100.0, "lowcut": 10.0, "highcut": 6000.0,
+             "modrate": 0.05, "moddepth": 0.0, "delaywarp": 0.0}
+            for mode in SM_MODES for fb in CLEAN_FEEDBACK for mix in CLEAN_MIX]
 
 
 def load(path: Path) -> np.ndarray:
@@ -87,18 +114,19 @@ def main() -> None:
 
     est = blind_estimate(wet)
     target, _ = target_vector(est)
-    idx = [KEYS.index(k) for k in RELIABLE]
     pool = pool_sm()
-    dists = []
-    for meta in pool:
-        vec, mask = target_vector(meta["fingerprint"])
-        m = mask[idx]
-        dists.append(float(np.sqrt(np.sum(m * (vec[idx] - target[idx]) ** 2) / max(m.sum(), 1.0))))
-    blind_i = int(np.argmin(dists))
+    blind_i = int(np.argmin([blind_distance(m["fingerprint"], target) for m in pool]))
+    grid = clean_grid(est)
+    print(f"отпечатки чистой сетки: {len(grid)} настроек...", flush=True)
+    with ProcessPoolExecutor(args.workers) as ex:
+        grid_fps = list(ex.map(_fast_job, grid))
+    clean = grid[int(np.argmin([blind_distance(fp, target) for fp in grid_fps]))]
 
     print(f"рендер {len(pool)} готовых эффектов Supermassive на сухом ({args.workers} процессов)...", flush=True)
     with ProcessPoolExecutor(args.workers) as ex:
-        renders = list(ex.map(_render_job, [(m["spec"]["params"], dry_in) for m in pool]))
+        renders = list(ex.map(_render_job, [(m["spec"]["params"], dry_in) for m in pool] + [(clean, dry_in)]))
+    clean_render = renders.pop()
+    clean_err = logmel_db(loud(clean_render), loud(wet))
     errs = [logmel_db(loud(r), loud(wet)) for r in renders]
     order = np.argsort(errs)
     oracle_i = int(order[0])
@@ -107,12 +135,13 @@ def main() -> None:
     import soundfile as sf
     OUT.mkdir(parents=True, exist_ok=True)
     files = {"1_dry.wav": dry, "2_reference_wet.wav": wet, "3_blind_supermassive.wav": renders[blind_i],
-             "4_best_of_pool_supermassive.wav": renders[oracle_i]}
+             "4_best_of_pool_supermassive.wav": renders[oracle_i],
+             "5_blind_clean_supermassive.wav": clean_render}
     for name, y in files.items():
         sf.write(OUT / name, loud(y).T, SR, subtype="PCM_24")
 
-    def show(i: int) -> str:
-        p = pool[i]["spec"]["params"]
+    def show(i) -> str:
+        p = i if isinstance(i, dict) else pool[i]["spec"]["params"]
         return ", ".join(f"{k}={v:.0f}" if isinstance(v, float) else f"{k}={v}" for k, v in p.items())
 
     fp_true = {k: est[k] for k in RELIABLE}
@@ -120,7 +149,7 @@ def main() -> None:
         "Whiptails: мокрый референс -> слепая сеть -> ближайшая готовая настройка Supermassive",
         f"Ошибка log-mel к 2_reference_wet (дБ, меньше — ближе): сухой {logmel_db(loud(dry), loud(wet)):.2f}, "
         f"слепой выбор {errs[blind_i]:.2f} (место {blind_rank} из {len(pool)}), лучший из набора {errs[oracle_i]:.2f}, "
-        f"медиана набора {float(np.median(errs)):.2f}",
+        f"медиана набора {float(np.median(errs)):.2f}, чистая сетка по слепой оценке {clean_err:.2f}",
         "",
         "Слепая оценка по мокрому (надежные признаки): " + ", ".join(f"{k}={v:.2f}" for k, v in fp_true.items()),
         f"  период повторов L/R {est['echo_period_l_ms']:.0f}/{est['echo_period_r_ms']:.0f} мс (сеть, ненадежно), "
@@ -128,6 +157,7 @@ def main() -> None:
         "",
         f"3_blind_supermassive: {show(blind_i)}",
         f"4_best_of_pool_supermassive: {show(oracle_i)}",
+        f"5_blind_clean_supermassive: {show(clean)}",
     ]
     (OUT / "README.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
