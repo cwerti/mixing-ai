@@ -33,12 +33,37 @@ PROCESSED_VOCAL_STEMS = frozenset({
     "oxeye_Sorry_22_BackingVox4",
 })
 
+# Не вокал в пуле сухих вокалов (инструменты и комнатные микрофоны мультитреков Cambridge, ~3 % сэмплов
+# dataset_v5): найдены прослушиванием обучающих пар 2026-11-05.
+NON_VOCAL_STEMS = frozenset({
+    "Amy_Helm__The_Handsome_Strange_Mandolin-Mic-M60",
+    "Bruks_Kak_Tvoi_Dela_Vova_05_RoomMic",
+    "Chalga_Szrad_A_Szj_11_AltoSaxMic1",
+    "Chalga_Szrad_A_Szj_12_AltoSaxMic2",
+    "Eduard_Semenov_River_Of_The_Wh_01_CajonMic1",
+    "Eduard_Semenov_River_Of_The_Wh_02_CajonMic2",
+    "Enda_Reilly_An_Nasc_Nua_04_Fiddles1Mic1",
+    "Enda_Reilly_An_Nasc_Nua_05_Fiddles1Mic2",
+    "Enda_Reilly_An_Nasc_Nua_06_Fiddles2Mic1",
+    "Enda_Reilly_An_Nasc_Nua_07_Fiddles2Mic2",
+    "Flags_54_10_DjembeMic1",
+    "Flags_54_11_DjembeMic2",
+    "Flags_54_12_DjembeMic3",
+    "Flags_54_13_DjembeMic4",
+    "Nicki_Bluhm__The_Gramblers_Go__NBATG - Room Mic LEFT - ELA M 60 (FET prototype)",
+    "Nicki_Bluhm__The_Gramblers_Go__NBATG - Room Mic RIGHT - ELA M 60 (FET prototype)",
+    "Ronnie_Jones_Why_Dont_You_Stay_21_RhodesDry",
+    "Zane_Carney__Friends_Talk_To_M_ROOM MIC - ELA M 251E - API 1608",
+    "Zwiepack_Air_04_SaxMic1_SpotMic",
+    "Zwiepack_Air_05_SaxMic2_PeerArray",
+})
+
 
 def is_dry_source(path: Path) -> bool:
-    """Подходит ли файл как сухой исходник: не служебный файл macOS, не пустой и не из списка обработанных."""
+    """Подходит ли файл как сухой исходник: не служебный файл macOS, не пустой, не обработанный и не инструмент."""
     try:
         return (not path.name.startswith("._") and path.stem not in PROCESSED_VOCAL_STEMS
-                and path.stat().st_size > 1000)
+                and path.stem not in NON_VOCAL_STEMS and path.stat().st_size > 1000)
     except OSError:
         return False
 
@@ -74,7 +99,7 @@ def _legacy_reverb_norm(param: str, value: float) -> float:
 
 # Стили, где иногда бывает «большой» мокрый реверб выше прежнего потолка 0.36 (эмбиент-вокал pluggnb/rage/hyperpop)
 _BIG_REVERB_STYLES = ("pluggnb_rnb", "rage", "hyperpop")
-_BIG_REVERB_PROB = 0.12
+_BIG_REVERB_PROB = 0.05  # было 0.12 до калибровки по сведениям (см. _realistic_params, reverb)
 
 
 def _generate_balanced_random_config(rng: random.Random = random) -> ChainConfig:
@@ -288,7 +313,7 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
     u = rng.uniform
     covered = rng.random() < _PARAM_COVERAGE_SHARE
     if name == "eq":
-        # Как в сбалансированном генераторе: EQ на инференсе считается аналитически (SpectralMatcher)
+        # Почти плоский EQ; у реалистичного prior его заменяет EQ по исходнику (adapt_chain_to_source)
         return {p: float(u(0.42, 0.58) if "gain" in p else u(0.25, 0.75)) for p in DATAGEN_PLUGINS["eq"]["params"]}
     if name == "pitch_corrector":
         # Retune 0 / Pitcher Fast в новой школе, Medium (0.5–0.7 физ.) в «натуральном»; ниже ~0.4 физ. не бывает
@@ -309,7 +334,10 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
         return {"threshold_db": thresh, "ratio": float(ratio), "attack_ms": float(attack),
                 "release_ms": float(release)}
     if name == "deesser":
-        thresh = u(0.05, 0.80)
+        # Де-эссер DSPEngine (раздел полос первого порядка на 4.2 кГц) почти не трогает сибилянты, зато при пороге
+        # ниже −24 дБ срезает весь верх: −6 дБ выше 10 кГц на пороге −31 дБ. С порогом 0.05–0.80, как в
+        # dataset_v5, генератор поэтому делал референсы темнее настоящих сведений; лёгкий де-эссинг — 0.45–0.90.
+        thresh = u(0.05, 0.80) if covered else u(0.45, 0.90)
         return {"threshold_db": thresh,
                 "ratio": float(np.clip(0.20 + 0.75 * (1.0 - thresh) + u(-0.12, 0.12), 0.0, 1.0))}
     if name == "multiband_compressor":
@@ -334,12 +362,15 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
     if name == "stereo_enhancer":
         return {"delay_ms": u(0.05, 0.95), "width": u(0.05, 0.95)}
     if name == "reverb":
-        wet = u(0.08, 0.95)
+        # Калибровка по сведениям Cambridge (scripts/calibrate_generator.py compare, 62 пары): у генератора
+        # dataset_v5 хвост через 0.3 с после фразы был на 12 дБ громче реального (медиана), до +54 дБ в 10 %
+        # случаев, а «темный» ревер прятал верх. Не до уровня Cambridge: там рок и фолк, целевой рэп мокрее, а
+        # Demucs частично съедает хвосты.
+        wet = u(0.08, 0.95) if covered else u(0.0, 0.6)
         if covered:
             room, damp = float(np.clip(0.20 + 0.70 * wet + u(-0.18, 0.18), 0.0, 1.0)), u(0.08, 0.92)
         else:
-            # Длинный (2.3–4 с) и темный (срез верха 6–8 кГц) реверб: большая комната, высокое затухание
-            room, damp = u(0.5, 0.95), u(0.55, 0.95)
+            room, damp = u(0.3, 0.85), u(0.3, 0.85)
         dry = float(np.clip(0.95 - 0.65 * wet + u(-0.08, 0.08), 0.0, 1.0))
         # Физически как в dataset_v4 (wet 0.08–0.35, room 0.15–0.95), иногда в «больших» стилях — wet 0.36–0.55
         wet_norm = _legacy_reverb_norm("wet_level", wet)
@@ -355,7 +386,7 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
             # Синхронизация с темпом: 1/4 (4 источника), 1/8, реже 1/16 при 120–165 BPM
             beats = rng.choices((1.0, 0.5, 0.25), weights=(0.45, 0.40, 0.15))[0]
             delay = DSPEngine.normalize_value(60.0 / u(120.0, 165.0) * beats, lo, hi)
-        mix = u(0.10, 0.95)
+        mix = u(0.10, 0.95) if covered else u(0.05, 0.6)  # тихие повторы «на подложку», как и ревер
         return {"delay_seconds": float(delay), "mix": mix,
                 "feedback": float(np.clip(0.18 + 0.70 * mix + u(-0.12, 0.12), 0.0, 1.0))}
     if name == "exciter":
@@ -416,6 +447,36 @@ def with_reference_layers(chain: ChainConfig, layers: List[PluginConfig]) -> Cha
     plugins = list(chain.plugins) + list(layers)
     order = {name: i for i, name in enumerate(RENDER_ORDER)}
     return ChainConfig(plugins=sorted(plugins, key=lambda p: order.get(p.name, len(order))))
+
+
+# Доля реалистичных цепочек, где EQ подтягивает голос к спектру настоящего сведения; остальные — почти плоский
+# EQ (регрессия должна видеть и его). До калибровки (dataset_v5) EQ был почти плоским всегда, и референсы
+# генератора были темнее настоящих сведений: без среза низа, 2–5 кГц −0.8 дБ против +1.8 дБ у Cambridge.
+SOURCE_EQ_SHARE = 0.7
+
+
+# Эффекты, по результату которых выставляется EQ: тюн и дилей спектр почти не меняют, а рендерятся долго
+_SOURCE_EQ_SKIP = ("pitch_corrector", "delay")
+
+
+def adapt_chain_to_source(chain: ChainConfig, y: np.ndarray, sr: int, rng: random.Random,
+                          prior: str) -> ChainConfig:
+    """
+    EQ реалистичной цепочки по спектру голоса на выходе цепочки (app/dataset/source_eq.py): как инженер,
+    который выставляет EQ на слух по результату. Если считать EQ по сухому, мультибэнд и де-эссер после него
+    гасят подъем 2–5 кГц, а компрессор и ревер возвращают низ.
+    """
+    if prior != "realistic" or rng.random() >= SOURCE_EQ_SHARE:
+        return chain
+    from app.dataset.source_eq import source_aware_eq
+    rest = [p for p in chain.plugins if p.name not in _SOURCE_EQ_SKIP + ("eq",)]
+    dsp = DSPEngine()
+
+    def render(eq_params: Dict[str, float]) -> np.ndarray:
+        return dsp.apply_chain(y, sr, ChainConfig(plugins=[PluginConfig("eq", eq_params)] + rest))
+
+    eq = PluginConfig("eq", source_aware_eq(y, sr, rng, render=render))
+    return ChainConfig(plugins=[eq if p.name == "eq" else p for p in chain.plugins])
 
 
 CHAIN_PRIORS = {"realistic": _generate_realistic_config, "balanced": _generate_balanced_random_config}
@@ -732,7 +793,7 @@ def _generate_sample_worker(task) -> str | None:
 
         # 2. Генерация цепочки плагинов (метка модели) и, с вероятностью harmony_ratio, слоев даблов/гармоний,
         # которые есть только в рендере референса и в метку не входят
-        chain = CHAIN_PRIORS[prior](rng)
+        chain = adapt_chain_to_source(CHAIN_PRIORS[prior](rng), y_ref_dry, sr, rng, prior)
         layers = sample_reference_layers(rng) if rng.random() < harmony_ratio else []
         render_chain = with_reference_layers(chain, layers) if layers else chain
 

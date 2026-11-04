@@ -162,6 +162,40 @@ def test_realistic_prior_rates_follow_real_chains():
             assert all(0.0 <= v <= 1.0 for v in plugin.params.values()), plugin
 
 
+def test_source_aware_eq_moves_voice_toward_real_mix_balance():
+    """EQ по исходнику режет низ у голоса с гулом и поднимает верх у темного — как инженер у Cambridge."""
+    import random
+    from scipy.signal import sosfilt, butter
+    from app.audio.dsp_engine import DSPEngine
+    from app.dataset.dataset_schema import DATAGEN_PLUGINS
+    from app.dataset.source_eq import source_aware_eq
+
+    sr = 44100
+    noise = np.random.default_rng(0).standard_normal(sr * 2)
+    boomy = noise + 8 * sosfilt(butter(2, 150, "lowpass", fs=sr, output="sos"), noise)
+    dark = sosfilt(butter(2, 1500, "lowpass", fs=sr, output="sos"), noise)
+    ranges = DATAGEN_PLUGINS["eq"]["params"]
+
+    def gains(y):
+        rng = random.Random(0)
+        g = [[DSPEngine.denormalize_value(p[f"band{i}_gain_db"], *ranges[f"band{i}_gain_db"]) for i in range(1, 8)]
+             for p in (source_aware_eq(y, sr, rng) for _ in range(10))]
+        return np.median(g, axis=0)
+
+    assert gains(boomy)[:2].min() < -3.0  # 80/160 Гц режутся
+    assert gains(dark)[4:].max() > 3.0  # 3–11 кГц поднимаются
+
+
+def test_is_dry_source_excludes_non_vocal_stems(tmp_path):
+    """Инструменты и комнатные микрофоны из пула сухих вокалов не считаются сухим вокалом."""
+    from app.dataset.dataset_generator import NON_VOCAL_STEMS, is_dry_source
+
+    name = "Flags_54_10_DjembeMic1"
+    assert name in NON_VOCAL_STEMS
+    sf.write(tmp_path / f"{name}.wav", np.full(4410, 0.1), 44100)
+    assert not is_dry_source(tmp_path / f"{name}.wav")
+
+
 def test_reference_layers_render_only():
     """Слои harmony встают перед реверб/дилей в рендере референса и не попадают в метку модели."""
     import random
