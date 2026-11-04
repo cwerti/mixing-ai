@@ -95,14 +95,15 @@ def full_chain(dry: np.ndarray, ref: np.ndarray, out: Path, *, tone: tuple[np.nd
     сравнивал выбор с истиной на одном и том же отрезке.
     """
     import soundfile as sf
-    from match_reference import LUFS, loud, run_match
+    from match_reference import LUFS, loud, run_match, tail_probe
     from spectrogram_compare import compare
     from app.eval.plugin_adapter import sm_render, write_vpreset
     from app.mixing.chain_optimizer import select_excerpt
     y_tone, tone_info = tone
     search = y_tone if truth is not None else select_excerpt(y_tone, SR, SEARCH_S)
+    # проба хвоста — конец фразы из всего тона: в самом громком фрагменте пауз может не быть
     summary = run_match(search, ref, truth, out, blind_model, presets, k=24, workers=workers, header=header,
-                        refine=6, spectrograms=False)
+                        refine=6, spectrograms=False, probe=tail_probe(y_tone))
     # run_match назвал вход «1_dry» — здесь это тон (возможно, фрагмент); весь тон, сухой и итог пишутся рядом
     (out / "1_dry.wav").unlink()
     sf.write(out / "1_tone.wav", loud(y_tone).T, SR, subtype="PCM_24")

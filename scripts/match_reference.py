@@ -25,7 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spectrogram_compare import compare  # noqa: E402
 from app.eval.blind_fingerprint_net import SR, load_model  # noqa: E402
 from app.eval.plugin_adapter import sm_render  # noqa: E402
-from app.eval.reference_match import RELIABLE, blind_estimate, pick_by_descriptions, preselect  # noqa: E402
+from app.eval.reference_match import RELIABLE, blind_estimate, description_distance, preselect  # noqa: E402
+from app.eval.tail_decay import (  # noqa: E402
+    TAIL_UNIT_DB, decay_profile, phrase_ends, probe_segment, profile_at, profile_distance,
+)
 from app.mixing.chain_optimizer import normalize_lufs, select_excerpt, to_stereo  # noqa: E402
 
 PRESETS = Path("data/runs/fingerprint/presets/presets.jsonl")
@@ -64,20 +67,52 @@ def _init_worker(model, threads: int) -> None:
     _worker_model = model
 
 
-def _render_job(args: tuple[dict, np.ndarray]) -> tuple[np.ndarray, dict]:
-    params, x = args
+def _render_job(args: tuple[dict, np.ndarray, tuple[np.ndarray, int] | None]
+                ) -> tuple[np.ndarray, dict, np.ndarray | None]:
+    """Рендер, его описание сетью и профиль хвоста на пробе от ее конца фразы (если проба есть)."""
+    params, x, probe = args
     y = sm_render(params, x, SR)
-    return y, blind_estimate(_worker_model, y)
+    tail = profile_at(sm_render(params, probe[0], SR), SR, probe[1]) if probe is not None else None
+    return y, blind_estimate(_worker_model, y), tail
+
+
+def tail_probe(dry: np.ndarray) -> np.ndarray:
+    """
+    Проба хвоста: кусок сухого с концом фразы перед паузой; если пауз нет — самый громкий кусок 3 с, оборванный
+    в тишину 2.5 с (короткое затухание, чтобы не щелкало).
+    """
+    probe = probe_segment(dry, SR)
+    if probe is not None:
+        return probe
+    voice = select_excerpt(dry, SR, 3.0).copy()
+    fade = int(0.02 * SR)
+    voice[:, -fade:] *= np.linspace(1.0, 0.0, fade, dtype=voice.dtype)
+    return np.concatenate([voice, np.zeros((voice.shape[0], int(2.5 * SR)), dtype=voice.dtype)], axis=1)
+
+
+def _scores(descs: list[dict], tails: list[np.ndarray | None], target: dict,
+            tail_target: np.ndarray | None) -> tuple[int, list[float], list[float | None]]:
+    """Двусторонняя проверка: расстояние описаний плюс ошибка профиля хвоста в единицах TAIL_UNIT_DB."""
+    dists, tail_errs = [], []
+    for desc, tail in zip(descs, tails):
+        err = profile_distance(tail, tail_target) if tail is not None and tail_target is not None else None
+        tail_errs.append(err)
+        dists.append(description_distance(desc, target) + (err / TAIL_UNIT_DB if err is not None else 0.0))
+    return int(np.argmin(dists)), dists, tail_errs
 
 
 def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: Path, model, presets: list[dict],
               k: int = 24, workers: int = 18, header: list[str] | None = None, refine: int = 0,
-              spectrograms: bool = True) -> dict:
+              spectrograms: bool = True, probe: np.ndarray | None = None) -> dict:
     """
     Подбор для одной пары (массивы (2, n) при SR, truth — истина для этого же сухого или None). Пишет wav, README и
     спектрограммы в out; возвращает сводку (выборы и log-mel, если есть истина).
 
     spectrograms=False — не строить spectrograms.png (вызывающий допишет файлы и построит сам).
+
+    Если у референса есть концы фраз перед паузами, в проверку входит профиль хвоста (app.eval.tail_decay): кандидат
+    рендерится еще и на пробе (probe или tail_probe(dry)) — куске с концом фразы. Сеть смотрит окна внутри фраз и
+    может недооценить хвост, тогда без этого выбирается короткий «амбиенс».
 
     refine > 0 — второй круг: дилеи (ECHOES) не берутся, если сеть не слышит повторов; refine лучших после
     двусторонней проверки рендерятся еще с mix ×0.5 и ×0.25, и в выбор входит сухой без эффекта. В инженерных миксах
@@ -85,6 +120,12 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
     """
     dry_in = normalize_lufs(dry, SR, LUFS)
     target = blind_estimate(model, ref)
+    tail_target = decay_profile(ref, SR)
+    probe_in = None
+    if tail_target is not None:
+        x = normalize_lufs(probe if probe is not None else tail_probe(dry), SR, LUFS)
+        ends = phrase_ends(x, SR)
+        probe_in = (x, ends[0][0]) if ends else None
     pool = list(range(len(presets)))
     if refine and target["echo_prob"] < ECHO_PROB_MIN:
         pool = [i for i in pool if presets[i]["category"] != "ECHOES"]
@@ -94,22 +135,26 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
     processes = max(1, min(workers, SM_PROCESSES))
     threads = max(1, workers // processes)
     with ProcessPoolExecutor(processes, initializer=_init_worker, initargs=(model, threads)) as ex:
-        renders, descs = map(list, zip(*ex.map(_render_job, [({"raw": presets[i]["raw"]}, dry_in) for i in cand])))
-        best, dists = pick_by_descriptions(descs, target)
+        renders, descs, tails = map(list, zip(*ex.map(
+            _render_job, [({"raw": presets[i]["raw"]}, dry_in, probe_in) for i in cand])))
+        best, dists, tail_errs = _scores(descs, tails, target, tail_target)
         if refine:
             top = [int(i) for i in np.argsort(dists)[:refine]]
             jobs = [(cand[i], f) for i in top for f in MIX_FACTORS]
-            for y, desc in ex.map(_render_job, [({"raw": presets[i]["raw"] | {"mix": presets[i]["raw"]["mix"] * f}},
-                                                 dry_in) for i, f in jobs]):
+            for y, desc, tail in ex.map(_render_job, [
+                    ({"raw": presets[i]["raw"] | {"mix": presets[i]["raw"]["mix"] * f}}, dry_in, probe_in)
+                    for i, f in jobs]):
                 renders.append(y)
                 descs.append(desc)
+                tails.append(tail)
             labels += [f"{presets[i]['category']}/{presets[i]['name']} mix×{f:g}" for i, f in jobs]
             picks += jobs
             renders.append(dry_in)
             descs.append(blind_estimate(model, dry_in))
+            tails.append(profile_at(probe_in[0], SR, probe_in[1]) if probe_in is not None else None)
             labels.append("без эффекта")
             picks.append(None)
-            best, dists = pick_by_descriptions(descs, target)
+            best, dists, tail_errs = _scores(descs, tails, target, tail_target)
 
     import soundfile as sf
     out.mkdir(parents=True, exist_ok=True)
@@ -124,7 +169,9 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
                "symmetric_mix_factor": None if chosen is None else chosen[1],
                "symmetric_raw": None if chosen is None else
                presets[chosen[0]]["raw"] | {"mix": presets[chosen[0]]["raw"]["mix"] * chosen[1]},
-               "target": {k_: target[k_] for k_ in RELIABLE}}
+               "target": {k_: target[k_] for k_ in RELIABLE},
+               "tail_target": None if tail_target is None else [float(v) for v in tail_target],
+               "symmetric_tail_error": tail_errs[best]}
     lines = list(header or []) + [
         "Описание референса (слепая сеть): " + ", ".join(f"{k_}={target[k_]:.2f}" for k_ in RELIABLE),
         f"  период повторов L/R {target['echo_period_l_ms']:.0f}/{target['echo_period_r_ms']:.0f} мс, "
@@ -138,13 +185,22 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
         files["6_truth.wav"] = truth
         summary |= {"logmel_dry": logmel_db(loud(dry), loud(truth)), "logmel_by_description": errs[0],
                     "logmel_symmetric": errs[best], "logmel_oracle": errs[oracle],
-                    "logmel_median": float(np.median(errs)), "oracle": name(oracle)}
+                    "logmel_median": float(np.median(errs)), "oracle": name(oracle),
+                    "candidates": [{"label": name(i), "description": description_distance(descs[i], target),
+                                    "tail_error": tail_errs[i], "logmel": errs[i]} for i in range(len(renders))]}
         lines += [f"5_best_of_candidates_by_truth: {name(oracle)}", "",
                   f"log-mel к истине (дБ): сухой {summary['logmel_dry']:.2f}, по описанию {errs[0]:.2f}, "
                   f"двусторонняя {errs[best]:.2f}, лучший из {len(renders)} {errs[oracle]:.2f}, "
                   f"медиана кандидатов {summary['logmel_median']:.2f}"]
-    lines += ["", "кандидаты (по описанию; расстояние описаний рендера и референса):"]
-    lines += [f"  {i + 1:>2}. {name(i):<56} {dists[i]:.3f}" for i in range(len(renders))]
+    if tail_target is not None:
+        lines += ["", "Хвост референса после конца фразы (дБ к уровню фразы через 0.1/0.3/0.6/1.0 с): Mid "
+                  + " ".join(f"{v:.0f}" for v in tail_target[:4]) + ", Side " + " ".join(f"{v:.0f}" for v in tail_target[4:])]
+    else:
+        lines += ["", "У референса нет пауз после фраз — хвост в выборе не участвует"]
+    lines += ["", "кандидаты (по описанию; итог проверки = расстояние описаний + ошибка хвоста / "
+              f"{TAIL_UNIT_DB:.0f} дБ):"]
+    lines += [f"  {i + 1:>2}. {name(i):<56} {dists[i]:.3f}"
+              + (f"  хвост {tail_errs[i]:.1f} дБ" if tail_errs[i] is not None else "") for i in range(len(renders))]
     for fname, y in files.items():
         sf.write(out / fname, loud(y).T, SR, subtype="PCM_24")
     (out / "README.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
