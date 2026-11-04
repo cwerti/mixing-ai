@@ -183,7 +183,9 @@ def full(args) -> None:
     затем пространство — по паре за раз (рендеры Supermassive параллельно внутри пары).
     """
     from concurrent.futures import ProcessPoolExecutor
-    from mix_full import MODEL, _tone_job, full_chain, tone_prior
+    from mix_full import (MAX_RENDERS, MODEL, TONE_PENALTY, UNRELIABLE_PENALTY, _tone_job, full_chain, tone_only,
+                          tone_prior)
+    from app.eval.reference_quality import reference_quality
     from match_reference import NET, load_presets
     from app.eval.blind_fingerprint_net import load_model
     from app.ml.pipeline import MixingAIMLPipeline
@@ -194,10 +196,12 @@ def full(args) -> None:
     cache.mkdir(parents=True, exist_ok=True)
     audio = {r["name"]: tuple(_load(Path(r["folder"]) / f) for f in ("dry_A.wav", "ref_B.wav", "truth_A.wav"))
              for r in rows}
+    quality = {n: reference_quality(a[1], SR) for n, a in audio.items()}
     todo = [r["name"] for r in rows if not (cache / f"{r['name']}.npz").exists()]
     if todo:
         pipeline = MixingAIMLPipeline(MODEL)
-        jobs = [(audio[n][0], audio[n][1], tone_prior(pipeline, audio[n][0], audio[n][1])) for n in todo]
+        jobs = [(audio[n][0], audio[n][1], tone_prior(pipeline, audio[n][0], audio[n][1]), 0, MAX_RENDERS,
+                 TONE_PENALTY if quality[n]["reliable"] else UNRELIABLE_PENALTY) for n in todo]
         del pipeline
         with ProcessPoolExecutor(args.workers) as ex:
             for n, (y, info) in zip(todo, ex.map(_tone_job, jobs)):
@@ -211,13 +215,23 @@ def full(args) -> None:
             continue
         z = np.load(cache / f"{r['name']}.npz")
         dry, ref, truth = audio[r["name"]]
-        res = full_chain(dry, ref, OUT / f"full{suffix}" / r["name"], tone=(z["y"], json.loads(str(z["info"]))),
-                         blind_model=blind, presets=presets, truth=truth, workers=args.workers,
-                         header=[f"{r['artist']} — {r['title']} ({r['genre']})", f"сухой {r['dry']}"])
-        done[r["name"]] = res | {"genre": r["genre"]}
+        tone = (z["y"], json.loads(str(z["info"])))
+        header = [f"{r['artist']} — {r['title']} ({r['genre']})", f"сухой {r['dry']}"]
+        out = OUT / f"full{suffix}" / r["name"]
+        q = quality[r["name"]]
+        if q["reliable"]:
+            res = full_chain(dry, ref, out, tone=tone, blind_model=blind, presets=presets, truth=truth,
+                             workers=args.workers, header=header)
+        else:
+            res = tone_only(dry, out, tone=tone, reasons=q["reasons"], truth=truth, header=header)
+        done[r["name"]] = res | {"genre": r["genre"], "reference_reliable": q["reliable"]}
         summary_path.write_text(json.dumps(done, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
-    keys = ("logmel_dry", "logmel_tone", "logmel_symmetric", "logmel_oracle")
-    print(f"пар {len(done)}: " + ", ".join(f"{k[7:]} {np.mean([d[k] for d in done.values()]):.2f}" for k in keys))
+    keys = ("logmel_dry", "logmel_tone", "logmel_symmetric")
+    for title, part in (("все", list(done.values())),
+                        ("чистые референсы", [d for d in done.values() if d.get("reference_reliable", True)])):
+        better = sum(d["logmel_symmetric"] < d["logmel_dry"] for d in part)
+        print(f"{title}, пар {len(part)}: " + ", ".join(f"{k[7:]} {np.mean([d[k] for d in part]):.2f}" for k in keys)
+              + f", итог лучше сухого в {better}")
 
 
 def main() -> None:

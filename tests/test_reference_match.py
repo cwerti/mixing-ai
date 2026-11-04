@@ -33,3 +33,18 @@ def test_preselect_orders_by_distance():
     target = _desc(2.0, 10.0, -6.0)
     pool = [_desc(5.0, 0.0, -20.0), _desc(2.0, 9.0, -6.0), _desc(3.0, 10.0, -6.0)]
     assert preselect(pool, target, 2) == [1, 2]
+
+
+def test_blind_estimate_caps_windows_on_long_signal(monkeypatch):
+    import numpy as np
+
+    import app.eval.reference_match as rm
+    calls = []
+    monkeypatch.setattr(rm, "predict", lambda model, wet, sr: calls.append(wet.shape[1]) or {"drr_db": 1.0})
+    long = np.zeros((2, int(90 * rm.SR)), dtype=np.float32)
+    short = np.zeros((2, int(30 * rm.SR)), dtype=np.float32)
+    rm.blind_estimate(None, long)
+    assert 2 <= len(calls) <= rm.MAX_WINDOWS
+    calls.clear()
+    rm.blind_estimate(None, short)
+    assert len(calls) == 23  # 30 с при шаге 1 с — как до ограничения

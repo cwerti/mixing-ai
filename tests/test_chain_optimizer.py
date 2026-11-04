@@ -185,3 +185,17 @@ def test_max_renders_caps_search_and_is_reproducible():
     assert renders <= 30 + 20  # проверка после поколения: перелет не больше одного поколения CMA-ES
     assert renders == second.history[-1][0]
     assert [(p.name, p.params) for p in first.chain.plugins] == [(p.name, p.params) for p in second.chain.plugins]
+
+
+def test_parallel_generation_gives_same_chain_as_serial():
+    """Потоки только ускоряют поколение CMA-ES: цепочка та же, что при последовательных рендерах."""
+    dry = synthetic_vocal(SR, seconds=6.0, seed=5)
+    ref = _render_reference(dry)
+
+    def run(workers: int):
+        return ChainOptimizer(sr=SR, log=lambda _: None).optimize(
+            dry, ref, budget_s=float("inf"), excerpt_s=6.0, seed=1, max_renders=30, workers=workers)
+
+    serial, parallel = run(1), run(4)
+    assert serial.history == parallel.history
+    assert [(p.name, p.params) for p in serial.chain.plugins] == [(p.name, p.params) for p in parallel.chain.plugins]

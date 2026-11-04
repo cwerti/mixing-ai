@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spectrogram_compare import compare  # noqa: E402
 from app.eval.blind_fingerprint_net import SR, load_model  # noqa: E402
 from app.eval.plugin_adapter import sm_render  # noqa: E402
-from app.eval.reference_match import RELIABLE, blind_estimate, preselect, symmetric_pick  # noqa: E402
+from app.eval.reference_match import RELIABLE, blind_estimate, pick_by_descriptions, preselect  # noqa: E402
 from app.mixing.chain_optimizer import normalize_lufs, select_excerpt, to_stereo  # noqa: E402
 
 PRESETS = Path("data/runs/fingerprint/presets/presets.jsonl")
@@ -33,6 +33,8 @@ NET = Path("data/runs/fingerprint/blind_net/blind_net.pt")
 LUFS = -18.0
 ECHO_PROB_MIN = 0.5  # ниже — сеть не слышит повторов, дилеи в кандидаты не берутся
 MIX_FACTORS = (0.5, 0.25)
+# Supermassive сам многопоточный: на 20 ядрах 12 рендеров по 30 с идут 26 с в 12 процессах и 12 с в 3-4
+SM_PROCESSES = 4
 
 
 def load(path: Path, seconds: float | None = None) -> np.ndarray:
@@ -51,16 +53,31 @@ def loud(y: np.ndarray) -> np.ndarray:
     return y * (0.89 / peak) if peak > 0.89 else y
 
 
-def _render_job(args: tuple[dict, np.ndarray]) -> np.ndarray:
+_worker_model = None
+
+
+def _init_worker(model, threads: int) -> None:
+    """Слепая сеть в каждом процессе: рендер и его описание считаются там же, где рендер."""
+    import torch
+    global _worker_model
+    torch.set_num_threads(threads)
+    _worker_model = model
+
+
+def _render_job(args: tuple[dict, np.ndarray]) -> tuple[np.ndarray, dict]:
     params, x = args
-    return sm_render(params, x, SR)
+    y = sm_render(params, x, SR)
+    return y, blind_estimate(_worker_model, y)
 
 
 def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: Path, model, presets: list[dict],
-              k: int = 24, workers: int = 18, header: list[str] | None = None, refine: int = 0) -> dict:
+              k: int = 24, workers: int = 18, header: list[str] | None = None, refine: int = 0,
+              spectrograms: bool = True) -> dict:
     """
     Подбор для одной пары (массивы (2, n) при SR, truth — истина для этого же сухого или None). Пишет wav, README и
     спектрограммы в out; возвращает сводку (выборы и log-mel, если есть истина).
+
+    spectrograms=False — не строить spectrograms.png (вызывающий допишет файлы и построит сам).
 
     refine > 0 — второй круг: дилеи (ECHOES) не берутся, если сеть не слышит повторов; refine лучших после
     двусторонней проверки рендерятся еще с mix ×0.5 и ×0.25, и в выбор входит сухой без эффекта. В инженерных миксах
@@ -74,20 +91,25 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
     cand = [pool[j] for j in preselect([presets[i]["fingerprint"] for i in pool], target, k)]
     labels = [f"{presets[i]['category']}/{presets[i]['name']}" for i in cand]
     picks: list[tuple[int, float] | None] = [(i, 1.0) for i in cand]  # (пресет, множитель mix); None — без эффекта
-    with ProcessPoolExecutor(workers) as ex:
-        renders = list(ex.map(_render_job, [({"raw": presets[i]["raw"]}, dry_in) for i in cand]))
-        best, dists, _ = symmetric_pick(model, renders, target)
+    processes = max(1, min(workers, SM_PROCESSES))
+    threads = max(1, workers // processes)
+    with ProcessPoolExecutor(processes, initializer=_init_worker, initargs=(model, threads)) as ex:
+        renders, descs = map(list, zip(*ex.map(_render_job, [({"raw": presets[i]["raw"]}, dry_in) for i in cand])))
+        best, dists = pick_by_descriptions(descs, target)
         if refine:
             top = [int(i) for i in np.argsort(dists)[:refine]]
             jobs = [(cand[i], f) for i in top for f in MIX_FACTORS]
-            renders += list(ex.map(_render_job, [({"raw": presets[i]["raw"] | {"mix": presets[i]["raw"]["mix"] * f}},
-                                                  dry_in) for i, f in jobs]))
+            for y, desc in ex.map(_render_job, [({"raw": presets[i]["raw"] | {"mix": presets[i]["raw"]["mix"] * f}},
+                                                 dry_in) for i, f in jobs]):
+                renders.append(y)
+                descs.append(desc)
             labels += [f"{presets[i]['category']}/{presets[i]['name']} mix×{f:g}" for i, f in jobs]
             picks += jobs
             renders.append(dry_in)
+            descs.append(blind_estimate(model, dry_in))
             labels.append("без эффекта")
             picks.append(None)
-            best, dists, _ = symmetric_pick(model, renders, target)
+            best, dists = pick_by_descriptions(descs, target)
 
     import soundfile as sf
     out.mkdir(parents=True, exist_ok=True)
@@ -100,6 +122,8 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
     summary = {"by_description": name(0), "symmetric": name(best), "symmetric_rank": best + 1,
                "symmetric_preset": None if chosen is None else presets[chosen[0]]["path"],
                "symmetric_mix_factor": None if chosen is None else chosen[1],
+               "symmetric_raw": None if chosen is None else
+               presets[chosen[0]]["raw"] | {"mix": presets[chosen[0]]["raw"]["mix"] * chosen[1]},
                "target": {k_: target[k_] for k_ in RELIABLE}}
     lines = list(header or []) + [
         "Описание референса (слепая сеть): " + ", ".join(f"{k_}={target[k_]:.2f}" for k_ in RELIABLE),
@@ -125,7 +149,8 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
         sf.write(out / fname, loud(y).T, SR, subtype="PCM_24")
     (out / "README.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
-    compare(out)
+    if spectrograms:
+        compare(out)
     return summary
 
 

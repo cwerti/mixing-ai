@@ -8,6 +8,7 @@
 плагин в DATAGEN_PLUGINS всегда слышен, поэтому лишний плагин нельзя «выкрутить в ноль».
 """
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Collection
 
@@ -342,7 +343,7 @@ class ChainOptimizer:
                  max_renders: int | None = None, min_improvement: float = 0.01, allow_tune: bool = True,
                  tune_speed: float | None = None,
                  fixed_plugins: list[PluginConfig] | None = None,
-                 exclude_plugins: Collection[str] = ()) -> OptimizationResult:
+                 exclude_plugins: Collection[str] = (), workers: int = 1) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -368,6 +369,8 @@ class ChainOptimizer:
                 пробах и попадают в итоговую цепочку как есть, но не подбираются и не выкидываются упрощением.
             exclude_plugins: Плагины, которые не подбираются ни по признакам, ни по модели (например, ревер и
                 дилей, когда пространство подбирается настоящим плагином после этой цепочки).
+            workers: Сколько кандидатов поколения CMA-ES рендерить одновременно (потоки: DSP и сеть метрики
+                отпускают GIL). На результат не влияет — оценки поколения возвращаются в том же порядке.
         """
         report = []
         fixed = tuple(fixed_plugins or ())
@@ -477,16 +480,18 @@ class ChainOptimizer:
             es = cma.CMAEvolutionStrategy(x0, DEFAULT_SIGMA, options)
             started = time.perf_counter()
             evaluations = history[-1][0]
-            while (not es.stop() and time.perf_counter() - started < budget_s
-                   and (max_renders is None or evaluations < max_renders)):
-                candidates = es.ask()
-                scores = [objective(unpack(x)) for x in candidates]
-                es.tell(candidates, scores)
-                evaluations += len(candidates)
-                history.append((evaluations, min(history[-1][1], es.result.fbest)))
-                if patience_renders and _stagnated(history, patience_renders, min_improvement):
-                    note(f"[*] CMA-ES остановлен: за {patience_renders} рендеров улучшение меньше {min_improvement}")
-                    break
+            with ThreadPoolExecutor(max(1, workers)) as pool:
+                while (not es.stop() and time.perf_counter() - started < budget_s
+                       and (max_renders is None or evaluations < max_renders)):
+                    candidates = es.ask()
+                    scores = list(pool.map(lambda x: objective(unpack(x)), candidates))
+                    es.tell(candidates, scores)
+                    evaluations += len(candidates)
+                    history.append((evaluations, min(history[-1][1], es.result.fbest)))
+                    if patience_renders and _stagnated(history, patience_renders, min_improvement):
+                        note(f"[*] CMA-ES остановлен: за {patience_renders} рендеров улучшение меньше "
+                             f"{min_improvement}")
+                        break
             if es.result.fbest < best_score:
                 best_score = es.result.fbest
                 current = unpack(es.result.xbest)

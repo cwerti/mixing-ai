@@ -21,14 +21,21 @@ RELIABLE = ("rt60_125", "rt60_250", "rt60_500", "rt60_1000", "rt60_2000", "rt60_
 # Семь полос RT60 вместе весят как два признака, иначе длина хвоста забивает баланс сухой/мокрый и ширину
 WEIGHTS = np.array([2.0 / 7] * 7 + [1.0] * 4)
 _IDX = [KEYS.index(k) for k in RELIABLE]
+# Больше окон на описание не берется: на длинном треке шаг растет. 30 с при шаге 1 с — это 23 окна, так что
+# короткие фрагменты (бенчмарк Cambridge) описываются как раньше, а 80 с — в три раза быстрее.
+MAX_WINDOWS = 24
 
 
-def blind_estimate(model, wet: np.ndarray, hop_s: float = 1.0) -> dict:
-    """Описание мокрого сигнала (2, n) при SR: медиана предсказаний по окнам 8 с с шагом hop_s."""
+def blind_estimate(model, wet: np.ndarray, hop_s: float = 1.0, max_windows: int = MAX_WINDOWS) -> dict:
+    """
+    Описание мокрого сигнала (2, n) при SR: медиана предсказаний по окнам 8 с с шагом hop_s (шаг растет, если
+    окон получается больше max_windows).
+    """
     n = int(SECONDS * SR)
     if wet.shape[1] < n:
         wet = np.pad(wet, ((0, 0), (0, n - wet.shape[1])))
-    starts = range(0, wet.shape[1] - n + 1, max(1, int(hop_s * SR)))
+    hop = max(1, int(hop_s * SR), int(np.ceil((wet.shape[1] - n) / max(1, max_windows - 1))))
+    starts = range(0, wet.shape[1] - n + 1, hop)
     preds = [predict(model, wet[:, s:s + n], SR) for s in starts]
     return {k: float(np.median([p[k] for p in preds])) for k in preds[0]}
 
@@ -50,5 +57,11 @@ def preselect(fingerprints: list[dict], target: dict, k: int) -> list[int]:
 def symmetric_pick(model, renders: list[np.ndarray], target: dict) -> tuple[int, list[float], list[dict]]:
     """(лучший индекс, расстояния, описания рендеров): описание каждого рендера сравнивается с описанием референса."""
     descs = [blind_estimate(model, r) for r in renders]
+    best, dists = pick_by_descriptions(descs, target)
+    return best, dists, descs
+
+
+def pick_by_descriptions(descs: list[dict], target: dict) -> tuple[int, list[float]]:
+    """Двусторонняя проверка по готовым описаниям рендеров: (лучший индекс, расстояния до описания референса)."""
     dists = [description_distance(d, target) for d in descs]
-    return int(np.argmin(dists)), dists, descs
+    return int(np.argmin(dists)), dists
