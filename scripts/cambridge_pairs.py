@@ -5,6 +5,7 @@
     python scripts/cambridge_pairs.py pairs              # сопоставить, выровнять, нарезать A/B → pairs.jsonl
     python scripts/cambridge_pairs.py match [--limit N]  # подбор пресета для каждой пары → match/<пара>/, summary.json
     python scripts/cambridge_pairs.py match --refine 6   # + уменьшенный mix, сухой → match_refine/, summary_refine.json
+    python scripts/cambridge_pairs.py full               # полная цепочка (тон DSP + Supermassive) → full/, summary_full.json
 
 Протокол cross: референс — выделенный вокал части B песни, сухой — часть A, истина — выделенный вокал части A.
 Так референс не совпадает по материалу с обрабатываемым сухим, как в реальной работе. Истина — выход Demucs,
@@ -176,6 +177,49 @@ def match(args) -> None:
     print(f"пар {len(done)}: " + ", ".join(f"{k[7:]} {np.mean([d[k] for d in done.values()]):.2f}" for k in keys))
 
 
+def full(args) -> None:
+    """
+    Полная цепочка scripts/mix_full.py на каждой паре: тон подбирается параллельно по парам (кэш full_tone/),
+    затем пространство — по паре за раз (рендеры Supermassive параллельно внутри пары).
+    """
+    from concurrent.futures import ProcessPoolExecutor
+    from mix_full import MODEL, _tone_job, full_chain, tone_prior
+    from match_reference import NET, load_presets
+    from app.eval.blind_fingerprint_net import load_model
+    from app.ml.pipeline import MixingAIMLPipeline
+    rows = [json.loads(line) for line in (OUT / "pairs.jsonl").read_text(encoding="utf-8").splitlines()]
+    rows = [r for r in rows if r["status"] == "ok"][: args.limit or None]
+    suffix = f"_{args.tag}" if args.tag else ""
+    cache = OUT / f"full_tone{suffix}"
+    cache.mkdir(parents=True, exist_ok=True)
+    audio = {r["name"]: tuple(_load(Path(r["folder"]) / f) for f in ("dry_A.wav", "ref_B.wav", "truth_A.wav"))
+             for r in rows}
+    todo = [r["name"] for r in rows if not (cache / f"{r['name']}.npz").exists()]
+    if todo:
+        pipeline = MixingAIMLPipeline(MODEL)
+        jobs = [(audio[n][0], audio[n][1], tone_prior(pipeline, audio[n][0], audio[n][1])) for n in todo]
+        del pipeline
+        with ProcessPoolExecutor(args.workers) as ex:
+            for n, (y, info) in zip(todo, ex.map(_tone_job, jobs)):
+                np.savez(cache / f"{n}.npz", y=y, info=json.dumps(info, ensure_ascii=False, default=float))
+                print(f"[+] тон {n}: " + ", ".join(p["name"] for p in info["plugins"]), flush=True)
+    blind, presets = load_model(NET), load_presets()
+    summary_path = OUT / f"summary_full{suffix}.json"
+    done = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+    for r in rows:
+        if r["name"] in done:
+            continue
+        z = np.load(cache / f"{r['name']}.npz")
+        dry, ref, truth = audio[r["name"]]
+        res = full_chain(dry, ref, OUT / f"full{suffix}" / r["name"], tone=(z["y"], json.loads(str(z["info"]))),
+                         blind_model=blind, presets=presets, truth=truth, workers=args.workers,
+                         header=[f"{r['artist']} — {r['title']} ({r['genre']})", f"сухой {r['dry']}"])
+        done[r["name"]] = res | {"genre": r["genre"]}
+        summary_path.write_text(json.dumps(done, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
+    keys = ("logmel_dry", "logmel_tone", "logmel_symmetric", "logmel_oracle")
+    print(f"пар {len(done)}: " + ", ".join(f"{k[7:]} {np.mean([d[k] for d in done.values()]):.2f}" for k in keys))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -185,8 +229,12 @@ def main() -> None:
     m.add_argument("--k", type=int, default=24)
     m.add_argument("--workers", type=int, default=18)
     m.add_argument("--refine", type=int, default=0, help="второй круг: mix ×0.5/×0.25 для N лучших, сухой, без дилеев")
+    f = sub.add_parser("full")
+    f.add_argument("--limit", type=int, default=0)
+    f.add_argument("--workers", type=int, default=18)
+    f.add_argument("--tag", default="", help="суффикс папок и сводки, чтобы не затирать прошлый вариант")
     args = parser.parse_args()
-    {"pairs": make_pairs, "match": match}[args.cmd](args)
+    {"pairs": make_pairs, "match": match, "full": full}[args.cmd](args)
 
 
 if __name__ == "__main__":

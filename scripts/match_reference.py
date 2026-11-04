@@ -73,6 +73,7 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
         pool = [i for i in pool if presets[i]["category"] != "ECHOES"]
     cand = [pool[j] for j in preselect([presets[i]["fingerprint"] for i in pool], target, k)]
     labels = [f"{presets[i]['category']}/{presets[i]['name']}" for i in cand]
+    picks: list[tuple[int, float] | None] = [(i, 1.0) for i in cand]  # (пресет, множитель mix); None — без эффекта
     with ProcessPoolExecutor(workers) as ex:
         renders = list(ex.map(_render_job, [({"raw": presets[i]["raw"]}, dry_in) for i in cand]))
         best, dists, _ = symmetric_pick(model, renders, target)
@@ -82,8 +83,10 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
             renders += list(ex.map(_render_job, [({"raw": presets[i]["raw"] | {"mix": presets[i]["raw"]["mix"] * f}},
                                                   dry_in) for i, f in jobs]))
             labels += [f"{presets[i]['category']}/{presets[i]['name']} mix×{f:g}" for i, f in jobs]
+            picks += jobs
             renders.append(dry_in)
             labels.append("без эффекта")
+            picks.append(None)
             best, dists, _ = symmetric_pick(model, renders, target)
 
     import soundfile as sf
@@ -93,7 +96,10 @@ def run_match(dry: np.ndarray, ref: np.ndarray, truth: np.ndarray | None, out: P
     name = labels.__getitem__
     files = {"1_dry.wav": dry, "2_reference.wav": ref, "3_by_description.wav": renders[0],
              "4_symmetric_check.wav": renders[best]}
+    chosen = picks[best]
     summary = {"by_description": name(0), "symmetric": name(best), "symmetric_rank": best + 1,
+               "symmetric_preset": None if chosen is None else presets[chosen[0]]["path"],
+               "symmetric_mix_factor": None if chosen is None else chosen[1],
                "target": {k_: target[k_] for k_ in RELIABLE}}
     lines = list(header or []) + [
         "Описание референса (слепая сеть): " + ", ".join(f"{k_}={target[k_]:.2f}" for k_ in RELIABLE),

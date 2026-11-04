@@ -9,7 +9,7 @@
 """
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Collection
 
 import cma
 import numpy as np
@@ -341,7 +341,8 @@ class ChainOptimizer:
                  excerpt_s: float = 12.0, seed: int = 0, patience_renders: int | None = None,
                  max_renders: int | None = None, min_improvement: float = 0.01, allow_tune: bool = True,
                  tune_speed: float | None = None,
-                 fixed_plugins: list[PluginConfig] | None = None) -> OptimizationResult:
+                 fixed_plugins: list[PluginConfig] | None = None,
+                 exclude_plugins: Collection[str] = ()) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -365,6 +366,8 @@ class ChainOptimizer:
                 (на слух выбор может расходиться с метрикой).
             fixed_plugins: Плагины, заданные цепочкой/архетипом явно (например, harmony): рендерятся во всех
                 пробах и попадают в итоговую цепочку как есть, но не подбираются и не выкидываются упрощением.
+            exclude_plugins: Плагины, которые не подбираются ни по признакам, ни по модели (например, ревер и
+                дилей, когда пространство подбирается настоящим плагином после этой цепочки).
         """
         report = []
         fixed = tuple(fixed_plugins or ())
@@ -407,13 +410,14 @@ class ChainOptimizer:
         distance_prior = None
         if model_probs and model_params:
             prior_plugins = {p: model_params[p] for p in SEARCHABLE_PLUGINS
-                             if model_probs.get(p, 0.0) > PLUGIN_ON_PROB and p in model_params}
+                             if model_probs.get(p, 0.0) > PLUGIN_ON_PROB and p in model_params
+                             and p not in exclude_plugins}
             distance_prior = self._distance(self._render(excerpt, eq_bands, prior_plugins, gate_threshold_db,
                                                          fixed), target)
             note(f"[*] Цепочка модели {list(prior_plugins)}: расстояние {distance_prior:.2f}")
 
         kept = {p for p in SEARCHABLE_PLUGINS if (model_probs or {}).get(p, 0.0) > MODEL_KEEP_PROB
-                and _uses_prior(p, model_probs, model_params)}
+                and _uses_prior(p, model_probs, model_params) and p not in exclude_plugins}
         if kept - set(plugins):
             note(f"[*] По уверенности модели добавлены: {sorted(kept - set(plugins))}")
         if "reverb" in plugins and "delay" not in plugins:
@@ -421,7 +425,10 @@ class ChainOptimizer:
             # лишний уберет упрощение ниже
             plugins.append("delay")
             note("[*] delay: проверяется вместе с ревером")
-        plugins = [p for p in SEARCHABLE_PLUGINS if p in set(plugins) | kept]
+        excluded = sorted(set(plugins) & set(exclude_plugins))
+        if excluded:
+            note(f"[*] Не подбираются (исключены): {excluded}")
+        plugins = [p for p in SEARCHABLE_PLUGINS if p in (set(plugins) | kept) - set(exclude_plugins)]
         prior_plugins = {p for p in plugins if _uses_prior(p, model_probs, model_params)}
         current = {p: _initial_params(p, model_probs, model_params) for p in plugins}
         layout = [(p, k) for p in plugins for k in _search_params(p) if (p, k) not in UNMEASURED_PARAMS]

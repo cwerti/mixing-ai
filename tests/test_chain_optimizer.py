@@ -57,6 +57,19 @@ def test_optimizer_keeps_dry_reference_dry():
     assert not names & {"reverb", "delay", "chorus", "stereo_enhancer"}
 
 
+def test_excluded_plugins_are_not_searched_even_when_reference_is_wet():
+    """Ревер и дилей подбирает настоящий плагин после цепочки — оптимизатор их не включает."""
+    dry = synthetic_vocal(SR, seconds=8.0, seed=3)
+    ref = _render_reference(dry)
+
+    result = ChainOptimizer(sr=SR, log=lambda _: None).optimize(dry, ref, budget_s=5.0, excerpt_s=8.0,
+                                                                exclude_plugins=("reverb", "delay"))
+
+    names = {plugin.name for plugin in result.chain.plugins}
+    assert not names & {"reverb", "delay"}
+    assert any("исключены" in line for line in result.report)
+
+
 def test_select_excerpt_picks_loudest_part():
     """Фрагмент выбирается по максимальной энергии."""
     quiet = 0.01 * np.ones((2, SR * 4), dtype=np.float32)

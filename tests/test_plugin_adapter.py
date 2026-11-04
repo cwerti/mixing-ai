@@ -41,3 +41,15 @@ def test_fast_fingerprint_matches_full_for_static_effects():
         full = fingerprint(effect, sr=SR, ir_seconds=8.0)
         assert fingerprint_distance(fast, full) < 0.15
         assert rmap.shape[0] == 2
+
+
+def test_write_vpreset_scales_mix_and_roundtrips(tmp_path):
+    from app.eval.plugin_adapter import load_vpreset, write_vpreset
+    src = tmp_path / "src.vpreset"
+    src.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<ValhallaSupermassive pluginVersion="0.6.4" '
+                   'presetName="Carousel" Mix="0.5" Feedback="0.25" Reserved1="0.0"/>\n', encoding="utf-8")
+    dst = tmp_path / "out.vpreset"
+    write_vpreset(src, dst, "Mixing-AI", 0.25)
+    out = load_vpreset(dst)
+    assert out["preset"] == "Mixing-AI"
+    assert out["raw"] == {"mix": 0.125, "feedback": 0.25}

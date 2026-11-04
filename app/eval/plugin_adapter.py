@@ -86,6 +86,20 @@ def load_vpreset(path) -> dict:
     return {"preset": attrs.get("presetName", str(path)), "raw": raw}
 
 
+def write_vpreset(src, dst, name: str, mix_factor: float = 1.0) -> None:
+    """
+    Копия пресета Valhalla src с новым именем и mix, умноженным на mix_factor (нормализованное значение 0..1), —
+    файл открывается в самом плагине (Supermassive → Preset → Load), в том числе внутри FL Studio.
+    """
+    import xml.etree.ElementTree as ET
+    tree = ET.parse(src)
+    root = tree.getroot()
+    root.set("presetName", name)
+    mix_key = next(k for k in root.attrib if k.lower() == "mix")
+    root.set(mix_key, repr(float(root.attrib[mix_key]) * mix_factor))
+    tree.write(dst, encoding="UTF-8", xml_declaration=True)
+
+
 def sm_render(params: dict, x: np.ndarray, sr: int) -> np.ndarray:
     """
     Рендер свежим экземпляром Supermassive (детерминированно, в отличие от повторного process). params — значения
