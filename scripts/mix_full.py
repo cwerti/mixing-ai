@@ -75,7 +75,8 @@ def tone_chain(dry: np.ndarray, ref: np.ndarray, prior: dict, seed: int = 0, max
     y = DSPEngine().apply_chain(cleaned, SR, result.chain, gate_threshold_db=gate,
                                 target_key_index=prior["key_index"], target_scale=prior["scale"])
     info = {"plugins": [{"name": p.name, "params": p.params} for p in result.chain.plugins],
-            "eq_bands": [[float(f), float(g)] for f, g in result.eq_bands], "pitch_speed": result.pitch_speed,
+            "eq_bands": [[float(f), float(g)] for f, g in result.eq_bands],
+            "post_eq_bands": [[float(f), float(g)] for f, g in result.post_eq_bands], "pitch_speed": result.pitch_speed,
             "gate_db": gate, "report": result.report}
     return y, info
 

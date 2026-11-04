@@ -168,6 +168,7 @@ class DSPEngine:
 
         short_names = {
             "eq": "fruity_parametric_eq_2",
+            "post_eq": "fruity_parametric_eq_2",
             "compressor": "fruity_compressor",
             "reverb": "fruity_reeverb_2",
             "delay": "fruity_delay_3"
@@ -241,6 +242,7 @@ class DSPEngine:
         
         short_names = {
             "eq": "fruity_parametric_eq_2",
+            "post_eq": "fruity_parametric_eq_2",
             "compressor": "fruity_compressor",
             "distortion": "fruity_fast_dist",
             "chorus": "fruity_chorus",
@@ -288,7 +290,7 @@ class DSPEngine:
             # Откат к стандартной встроенной обработке Pedalboard
             phys = self.get_physical_params(plugin)
             
-            if plugin.name == "eq" or (vst_loaded is False and plugin.name == "fabfilter_pro_q_3"):
+            if plugin.name in ("eq", "post_eq") or (vst_loaded is False and plugin.name == "fabfilter_pro_q_3"):
                 # Создаем цепочку из 7 фильтров EQ в качестве оффлайн-аналога
                 effects.append(LowShelfFilter(
                     cutoff_frequency_hz=phys.get("band1_freq_hz", phys.get("band1_freq", 100.0)),

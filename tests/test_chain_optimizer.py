@@ -199,3 +199,35 @@ def test_parallel_generation_gives_same_chain_as_serial():
     serial, parallel = run(1), run(4)
     assert serial.history == parallel.history
     assert [(p.name, p.params) for p in serial.chain.plugins] == [(p.name, p.params) for p in parallel.chain.plugins]
+
+
+def test_post_eq_after_dynamics_matches_bright_reference():
+    """Финальный EQ стоит после динамики и сдвигает спектр к референсу с поднятой на 6 дБ серединой-верхом."""
+    import librosa
+
+    from app.mixing.chain_optimizer import eq_plugin
+
+    dry = synthetic_vocal(SR, seconds=6.0, seed=7)
+    stereo = normalize_lufs(to_stereo(dry), SR, CHAIN_INPUT_LUFS)
+    bands = [(90.0, 0.0), (200.0, 0.0), (500.0, 0.0), (1200.0, 0.0), (3000.0, 0.0), (6500.0, 0.0), (8000.0, 0.0)]
+    bands[4] = (2500.0, 6.0)
+    ref = DSPEngine().apply_chain(stereo, SR, ChainConfig(plugins=[eq_plugin(bands)]))
+
+    result = ChainOptimizer(sr=SR, log=lambda _: None).optimize(
+        dry, ref, budget_s=float("inf"), excerpt_s=6.0, seed=1, max_renders=30, allow_tune=False)
+
+    names = [p.name for p in result.chain.plugins]
+    assert names[0] == "eq" and "post_eq" in names
+    assert all(names.index("post_eq") > names.index(p) for p in ("compressor", "deesser", "multiband_compressor")
+               if p in names)
+    assert len(result.post_eq_bands) == 7
+
+    def high_db(y):
+        spec = np.abs(librosa.stft(np.mean(y, axis=0), n_fft=2048)) ** 2
+        freqs = librosa.fft_frequencies(sr=SR, n_fft=2048)
+        return 10 * np.log10(spec[freqs >= 2000].sum() / spec.sum())
+
+    rendered = DSPEngine().apply_chain(stereo, SR, result.chain)
+    # SpectralMatcher переносит match_strength = 0.3 разницы спектров (остальное — тембр другого певца)
+    moved = (high_db(rendered) - high_db(stereo)) / (high_db(ref) - high_db(stereo))
+    assert 0.2 < moved < 1.0

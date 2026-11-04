@@ -43,6 +43,11 @@ PARAM_INTENSITY = {
 
 # Шаг CMA-ES без подсказки сети и границы шага по уверенности сети (ошибка параметра на валидации)
 DEFAULT_SIGMA = 0.2
+# Доля разницы спектров, которую переносит финальный EQ (post_eq). Первый EQ переносит 0.3 (SpectralMatcher):
+# остальное считается тембром другого певца. Финальный EQ поверх готового тона на 52 парах Cambridge: доля 0.3 —
+# log-mel 8.62 и верх (8+ кГц) темнее истины на 2.7 дБ, 0.7 — 8.60 и 1.9 дБ, 1.0 — 8.64 и 1.3 дБ (без него
+# 8.75 и 3.5 дБ). В парах Cambridge референс — тот же певец, на чужом голосе полный перенос копировал бы форманты
+POST_EQ_STRENGTH = 0.7
 PRIOR_SIGMA_RANGE = (0.05, DEFAULT_SIGMA)
 
 # Параметры, которых метрика стиля не слышит (в ней нет признаков модуляции): CMA-ES крутит их до упора ради
@@ -99,6 +104,8 @@ class OptimizationResult:
     report: list[str] = field(default_factory=list)
     # Сходимость CMA-ES: (число рендеров, лучшая целевая функция на этот момент) после каждого поколения
     history: list[tuple[int, float]] = field(default_factory=list)
+    # Финальный EQ после динамики (post_eq): подгонка спектра под референс по всему треку
+    post_eq_bands: list[tuple[float, float]] = field(default_factory=list)
 
 
 def normalize_lufs(y: np.ndarray, sr: int, target_lufs: float) -> np.ndarray:
@@ -136,13 +143,13 @@ def physical_to_normalized(plugin: str, param: str, value: float) -> float:
     return float(np.clip((value - low) / (high - low), 0.0, 1.0)) if high != low else 0.0
 
 
-def eq_plugin(eq_bands: list[tuple[float, float]]) -> PluginConfig:
-    """Собирает PluginConfig эквалайзера из списка (частота, гейн)."""
+def eq_plugin(eq_bands: list[tuple[float, float]], name: str = "eq") -> PluginConfig:
+    """Собирает PluginConfig эквалайзера (eq или post_eq) из списка (частота, гейн)."""
     params = {}
     for i, (freq, gain) in enumerate(eq_bands, start=1):
         params[f"band{i}_freq_hz"] = physical_to_normalized("eq", f"band{i}_freq_hz", freq)
         params[f"band{i}_gain_db"] = physical_to_normalized("eq", f"band{i}_gain_db", gain)
-    return PluginConfig(name="eq", params=params)
+    return PluginConfig(name=name, params=params)
 
 
 def select_plugins(src: dict, ref: dict, model_probs: dict[str, float] | None) -> tuple[list[str], list[str]]:
@@ -279,6 +286,7 @@ class ChainOptimizer:
         self.dsp = DSPEngine()
         self.enhancer = VocalEnhancer(sr=sr)
         self.matcher = SpectralMatcher(sr=sr)
+        self.post_matcher = SpectralMatcher(sr=sr, match_strength=POST_EQ_STRENGTH)
 
     def _render(self, base: np.ndarray, eq_bands, plugins: dict[str, dict[str, float]],
                 gate_threshold_db: float | None, fixed: tuple[PluginConfig, ...] = ()) -> np.ndarray:
@@ -374,7 +382,8 @@ class ChainOptimizer:
         """
         report = []
         fixed = tuple(fixed_plugins or ())
-        clashing = [p.name for p in fixed if p.name in SEARCHABLE_PLUGINS or p.name in ("eq", "pitch_corrector")]
+        clashing = [p.name for p in fixed
+                    if p.name in SEARCHABLE_PLUGINS or p.name in ("eq", "post_eq", "pitch_corrector")]
         if clashing:
             raise ValueError(f"fixed_plugins не должны пересекаться с подбираемыми плагинами: {clashing}")
 
@@ -506,12 +515,13 @@ class ChainOptimizer:
                 note(f"[-] {name} убран: без него {score:.2f} против {best_score:.2f}")
                 current, best_score = reduced, min(best_score, score)
 
-        # EQ пересчитывается после остальных эффектов (реверб, хорус и экситер меняют спектр) и по всему треку:
-        # самый громкий фрагмент по тембру отличается от трека в целом, и EQ по нему переобучается
-        # Рендер идет настоящей финальной цепочкой (EQ стоит до автотюна, а PSOLA пересинтезирует область
-        # основного тона), поэтому EQ уточняется итеративно по остатку разницы спектров
-        def build_chain(bands) -> ChainConfig:
-            chain = ChainConfig(plugins=[eq_plugin(bands)])
+        # Спектр доводится вторым EQ после динамики и сатурации (post_eq) по всему треку: самый громкий
+        # фрагмент по тембру отличается от трека в целом. Первый EQ остается тем, с которым подбирались
+        # динамика и сатурация: от него зависит, как они работают. Подъем верха в первом EQ де-эссер и
+        # компрессоры съедают — на 52 парах Cambridge тон выходил темнее истины на 8-18 кГц в 44 случаях.
+        # Рендер идет настоящей финальной цепочкой (автотюн, лимитер), поэтому post_eq уточняется итеративно
+        def build_chain(bands, post) -> ChainConfig:
+            chain = ChainConfig(plugins=[eq_plugin(bands), eq_plugin(post, "post_eq")])
             if pitch_speed is not None:
                 chain.plugins.append(PluginConfig(name="pitch_corrector", params={"speed": pitch_speed}))
             chain.plugins += [PluginConfig(name=name, params=current[name]) for name in current]
@@ -521,20 +531,20 @@ class ChainOptimizer:
 
         full_base = np.vstack([self.enhancer.suppress_resonances(ch) for ch in src]).astype(np.float32)
         ref_spectrum = self.matcher.long_term_spectrum_db(y_ref)
-        eq_bands = [(f, 0.0) for f in SpectralMatcher.BAND_CENTERS_HZ]
+        post_bands = [(f, 0.0) for f in SpectralMatcher.BAND_CENTERS_HZ]
         for _ in range(3):
-            rendered = self.dsp.apply_chain(full_base, self.sr, build_chain(eq_bands),
+            rendered = self.dsp.apply_chain(full_base, self.sr, build_chain(eq_bands, post_bands),
                                             gate_threshold_db=gate_threshold_db,
                                             target_key_index=key_index, target_scale=scale)
             residual = ref_spectrum - self.matcher.long_term_spectrum_db(rendered)
-            eq_bands = self.matcher.fit_eq_to_delta(residual + self.matcher.eq_curve_db(eq_bands))
+            post_bands = self.post_matcher.fit_eq_to_delta(residual + self.post_matcher.eq_curve_db(post_bands))
 
-        chain = build_chain(eq_bands)
-        distance_final = self._distance(self._render(excerpt, eq_bands, current, gate_threshold_db, fixed),
-                                        target)
+        chain = build_chain(eq_bands, post_bands)
+        distance_final = self._distance(self._render(excerpt, eq_bands, current, gate_threshold_db,
+                                                     fixed + (eq_plugin(post_bands, "post_eq"),)), target)
 
         note(f"[+] Расстояние до референса: исходник {distance_source:.2f}"
              + (f", модель {distance_prior:.2f}" if distance_prior is not None else "")
              + f", подбор {distance_final:.2f}")
         return OptimizationResult(chain, eq_bands, pitch_speed, distance_source, distance_prior,
-                                  distance_final, report, history)
+                                  distance_final, report, history, post_bands)
