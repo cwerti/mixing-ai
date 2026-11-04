@@ -351,7 +351,8 @@ class ChainOptimizer:
                  max_renders: int | None = None, min_improvement: float = 0.01, allow_tune: bool = True,
                  tune_speed: float | None = None,
                  fixed_plugins: list[PluginConfig] | None = None,
-                 exclude_plugins: Collection[str] = (), workers: int = 1) -> OptimizationResult:
+                 exclude_plugins: Collection[str] = (), force_plugins: Collection[str] = (),
+                 workers: int = 1) -> OptimizationResult:
         """
         Подбирает цепочку для исходника y_src под референс y_ref.
 
@@ -377,6 +378,9 @@ class ChainOptimizer:
                 пробах и попадают в итоговую цепочку как есть, но не подбираются и не выкидываются упрощением.
             exclude_plugins: Плагины, которые не подбираются ни по признакам, ни по модели (например, ревер и
                 дилей, когда пространство подбирается настоящим плагином после этой цепочки).
+            force_plugins: Плагины, которые подбираются независимо от признаков и модели. Лишние убирает то же
+                упрощение, что и остальные: набор эффектов решают данные, а не правила select_plugins
+                (так собирается распределение цепочек по реальным сведениям, scripts/real_chain_prior.py).
             workers: Сколько кандидатов поколения CMA-ES рендерить одновременно (потоки: DSP и сеть метрики
                 отпускают GIL). На результат не влияет — оценки поколения возвращаются в том же порядке.
         """
@@ -386,6 +390,9 @@ class ChainOptimizer:
                     if p.name in SEARCHABLE_PLUGINS or p.name in ("eq", "post_eq", "pitch_corrector")]
         if clashing:
             raise ValueError(f"fixed_plugins не должны пересекаться с подбираемыми плагинами: {clashing}")
+        unknown = sorted(set(force_plugins) - set(SEARCHABLE_PLUGINS))
+        if unknown:
+            raise ValueError(f"force_plugins: не подбираемые плагины {unknown}; допустимы {list(SEARCHABLE_PLUGINS)}")
 
         def note(message: str):
             report.append(message)
@@ -440,7 +447,11 @@ class ChainOptimizer:
         excluded = sorted(set(plugins) & set(exclude_plugins))
         if excluded:
             note(f"[*] Не подбираются (исключены): {excluded}")
-        plugins = [p for p in SEARCHABLE_PLUGINS if p in (set(plugins) | kept) - set(exclude_plugins)]
+        forced = set(force_plugins) - set(plugins) - kept - set(exclude_plugins)
+        if forced:
+            note(f"[*] Проверяются принудительно: {sorted(forced)}")
+        plugins = [p for p in SEARCHABLE_PLUGINS
+                   if p in (set(plugins) | kept | set(force_plugins)) - set(exclude_plugins)]
         prior_plugins = {p for p in plugins if _uses_prior(p, model_probs, model_params)}
         current = {p: _initial_params(p, model_probs, model_params) for p in plugins}
         layout = [(p, k) for p in plugins for k in _search_params(p) if (p, k) not in UNMEASURED_PARAMS]

@@ -54,7 +54,8 @@ def tone_prior(pipeline, dry: np.ndarray, ref: np.ndarray) -> dict:
 
 
 def tone_chain(dry: np.ndarray, ref: np.ndarray, prior: dict, seed: int = 0, max_renders: int = MAX_RENDERS,
-               intensity_penalty: float = TONE_PENALTY, workers: int = 1) -> tuple[np.ndarray, dict]:
+               intensity_penalty: float = TONE_PENALTY, workers: int = 1,
+               force_plugins: tuple[str, ...] = ()) -> tuple[np.ndarray, dict]:
     """
     Тон и динамика без пространства. Возвращает рендер всего сухого (на уровне CHAIN_INPUT_LUFS, как в
     process_vocal.py) и описание цепочки для chain.json.
@@ -69,7 +70,7 @@ def tone_chain(dry: np.ndarray, ref: np.ndarray, prior: dict, seed: int = 0, max
     result = ChainOptimizer(sr=SR, metric="embedding", log=lambda _: None,
                             intensity_penalty=intensity_penalty).optimize(
         src, ref, **prior, gate_threshold_db=gate, budget_s=float("inf"), seed=seed, patience_renders=60,
-        max_renders=max_renders, exclude_plugins=TONE_EXCLUDE, workers=workers)
+        max_renders=max_renders, exclude_plugins=TONE_EXCLUDE, force_plugins=force_plugins, workers=workers)
     enhancer = VocalEnhancer(sr=SR)
     cleaned = np.vstack([enhancer.suppress_resonances(ch) for ch in src]).astype(np.float32)
     y = DSPEngine().apply_chain(cleaned, SR, result.chain, gate_threshold_db=gate,
@@ -77,7 +78,8 @@ def tone_chain(dry: np.ndarray, ref: np.ndarray, prior: dict, seed: int = 0, max
     info = {"plugins": [{"name": p.name, "params": p.params} for p in result.chain.plugins],
             "eq_bands": [[float(f), float(g)] for f, g in result.eq_bands],
             "post_eq_bands": [[float(f), float(g)] for f, g in result.post_eq_bands], "pitch_speed": result.pitch_speed,
-            "gate_db": gate, "report": result.report}
+            "gate_db": gate, "report": result.report, "distance_source": result.distance_source,
+            "distance_final": result.distance_final}
     return y, info
 
 

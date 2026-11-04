@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.append(str(Path(__file__).parent.parent.absolute()))
 
@@ -68,6 +69,19 @@ def test_excluded_plugins_are_not_searched_even_when_reference_is_wet():
     names = {plugin.name for plugin in result.chain.plugins}
     assert not names & {"reverb", "delay"}
     assert any("исключены" in line for line in result.report)
+
+
+def test_forced_plugins_are_searched_and_unknown_names_rejected():
+    """Принудительный эффект подбирается даже без признаков; опечатка в имени — ошибка, а не тихий пропуск."""
+    dry = synthetic_vocal(SR, seconds=8.0, seed=4)
+    ref = normalize_lufs(to_stereo(dry), SR, CHAIN_INPUT_LUFS)
+    optimizer = ChainOptimizer(sr=SR, log=lambda _: None)
+
+    result = optimizer.optimize(dry, ref, budget_s=5.0, excerpt_s=8.0, force_plugins=("chorus",))
+    assert any("принудительно" in line and "chorus" in line for line in result.report)
+
+    with pytest.raises(ValueError, match="compresor"):
+        optimizer.optimize(dry, ref, budget_s=5.0, excerpt_s=8.0, force_plugins=("compresor",))
 
 
 def test_select_excerpt_picks_loudest_part():
