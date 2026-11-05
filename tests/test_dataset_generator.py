@@ -1,4 +1,5 @@
 import os
+import random
 import tempfile
 import json
 import numpy as np
@@ -254,3 +255,27 @@ def test_remap_param_vector_keeps_physical_values_of_old_checkpoints():
         idx = index(plugin, param)
         new_lo, new_hi = DATAGEN_PLUGINS[plugin]["params"][param]
         assert lo + vec[idx] * (hi - lo) == pytest.approx(new_lo + out[idx] * (new_hi - new_lo), abs=1e-5)
+
+
+def test_load_chunk_at_reproduces_the_training_chunk(tmp_path):
+    """Обучение по звуку перечитывает сухой фрагмент по координатам из индекса — звук и уровень те же."""
+    from app.dataset.dataset_generator import _load_chunk, load_chunk_at
+    sr = 22050
+    t = np.arange(sr * 5) / sr
+    y = (0.1 * np.sin(2 * np.pi * 220 * t) * (1 + np.sin(2 * np.pi * 0.7 * t))).astype(np.float32)
+    path = tmp_path / "voice.wav"
+    sf.write(path, y, sr)
+    where: dict = {}
+    chunk = _load_chunk(path, sr, 2.0, random.Random(3), where)
+    again = load_chunk_at(where, sr)
+    assert again.shape == chunk.shape
+    assert np.max(np.abs(again - chunk)) < 1e-3 * np.max(np.abs(chunk))
+
+
+
+def test_frozen_real_pair_songs_are_test_songs():
+    """Песни замороженной половины реальных пар (app/data/test_songs.json) не попадают в обучение."""
+    from app.dataset.dataset_generator import is_test_song
+    assert is_test_song(Path("Skelpolu_Human_Mistakes_Vox.wav"))
+    assert is_test_song(Path("Albert_Kader_Whiptails_Vox.wav"))
+    assert not is_test_song(Path("Some_Unknown_Song_LeadVox.wav"))

@@ -1,6 +1,8 @@
 import os
 import random
 import json
+import re
+from functools import lru_cache
 from typing import List, Dict, Tuple
 import librosa
 import numpy as np
@@ -73,9 +75,22 @@ def is_dry_source(path: Path) -> bool:
 TEST_SONG_PREFIXES = ("Albert_Kader_Whiptails", "oxeye_Sorry", "Ronnie_Jones_Why_Dont_You_Stay")
 
 
+# Замороженный честный тест: половина реальных пар Cambridge — песни не входят
+# ни в train, ни в val (ключ — исполнитель+название без пробелов и знаков, как начало имени сухого файла)
+TEST_SONGS_PATH = Path(__file__).resolve().parents[1] / "data" / "test_songs.json"
+
+
+@lru_cache(maxsize=1)
+def _test_song_keys() -> tuple[str, ...]:
+    if not TEST_SONGS_PATH.exists():
+        return ()
+    return tuple(json.loads(TEST_SONGS_PATH.read_text(encoding="utf-8"))["song_keys"])
+
+
 def is_test_song(path: Path) -> bool:
     """Файл из песни реальных тестовых пар."""
-    return path.stem.startswith(TEST_SONG_PREFIXES)
+    key = re.sub(r"[^a-z0-9]", "", path.stem.lower())
+    return path.stem.startswith(TEST_SONG_PREFIXES) or key.startswith(_test_song_keys())
 
 
 def _is_audio_file(path: Path) -> bool:
@@ -713,7 +728,7 @@ class DatasetGenerator:
             "cross_ratio": cross_ratio,
             "prior": prior,
             "harmony_ratio": harmony_ratio,
-            "exclude_test_songs": list(TEST_SONG_PREFIXES) if exclude_test_songs else [],
+            "exclude_test_songs": list(TEST_SONG_PREFIXES) + list(_test_song_keys()) if exclude_test_songs else [],
             "with_reference_layers": sum(1 for s in samples if s.ref_layers),
             "domain_rand_own_prob": domain_rand_own_prob,
             # Диапазоны, в которых нормализованы метки (train_ml копирует их в чекпоинт)
@@ -750,10 +765,12 @@ def _effect_variants(sr: int, own_prob: float):
     return _VARIANTS
 
 
-def _load_chunk(path: Path, sr: int, seconds: float, rng: random.Random) -> np.ndarray:
+def _load_chunk(path: Path, sr: int, seconds: float, rng: random.Random, where: dict | None = None
+                ) -> np.ndarray:
     """
     Стерео-фрагмент (2, N) заданной длины на уровне MODEL_LUFS: самый громкий из 4 случайных окон файла
-    без тишины по краям; короткий файл дополняется тишиной.
+    без тишины по краям; короткий файл дополняется тишиной. where (если передан) заполняется координатами
+    фрагмента для load_chunk_at: обучение по звуку перечитывает сухой кусок, а не хранит его в датасете.
     """
     y, _ = librosa.load(path, sr=sr, mono=False)
     y = to_stereo(y)
@@ -761,13 +778,30 @@ def _load_chunk(path: Path, sr: int, seconds: float, rng: random.Random) -> np.n
     y = y[:, start:end]
 
     n = int(seconds * sr)
+    offset = start
     if y.shape[1] > n:
         starts = [rng.randint(0, y.shape[1] - n) for _ in range(4)]
         best = max(starts, key=lambda s0: float(np.mean(y[:, s0:s0 + n] ** 2)))
         y = y[:, best:best + n]
+        offset += best
     elif y.shape[1] < n:
         y = np.pad(y, ((0, 0), (0, n - y.shape[1])))
-    return normalize_lufs(y, sr, MODEL_LUFS)
+    out = normalize_lufs(y, sr, MODEL_LUFS)
+    if where is not None:
+        peak = float(np.max(np.abs(y)))
+        where.update(path=str(path), offset_s=offset / sr, frames=n,
+                     gain=float(np.max(np.abs(out)) / peak) if peak > 0 else 1.0)
+    return out
+
+
+def load_chunk_at(where: dict, sr: int) -> np.ndarray:
+    """Сухой фрагмент (2, N) сэмпла по координатам из _load_chunk(where=...) — тот же звук и уровень."""
+    y, _ = librosa.load(where["path"], sr=sr, mono=False, offset=where["offset_s"],
+                        duration=where["frames"] / sr + 0.05)
+    y = to_stereo(y)[:, :where["frames"]]
+    if y.shape[1] < where["frames"]:
+        y = np.pad(y, ((0, 0), (0, where["frames"] - y.shape[1])))
+    return (y * where["gain"]).astype(np.float32)
 
 
 def _generate_sample_worker(task) -> str | None:
@@ -794,7 +828,8 @@ def _generate_sample_worker(task) -> str | None:
     try:
         # 1. Фрагменты длиной в окно модели (~6 с, 520 мел-кадров) на -23 LUFS
         duration = window_seconds(sr)
-        y_dry = _load_chunk(src_file, sr, duration, rng)
+        src_where: dict = {}
+        y_dry = _load_chunk(src_file, sr, duration, rng, src_where)
         y_ref_dry = y_dry if ref_file == src_file else _load_chunk(ref_file, sr, duration, rng)
 
         # 2. Генерация цепочки плагинов (метка модели) и, с вероятностью harmony_ratio, слоев даблов/гармоний,
@@ -886,7 +921,8 @@ def _generate_sample_worker(task) -> str | None:
             src_file=str(src_file),
             ref_file=str(ref_file),
             ref_layers=[layer.params for layer in layers],
-            ref_impls=impls
+            ref_impls=impls,
+            src_chunk=src_where
         )
         return sample.to_jsonl_line()
     except Exception as e:

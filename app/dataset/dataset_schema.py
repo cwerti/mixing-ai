@@ -315,6 +315,9 @@ class DatasetSample:
     # Реализации плагинов в рендере референса при доменной рандомизации ("плагин:реализация",
     # app/audio/effect_variants.py); пусто — все плагины нашим DSPEngine (датасеты до v5)
     ref_impls: List[str] = field(default_factory=list)
+    # Координаты сухого фрагмента исходника (path, offset_s, frames, gain) для обучения по звуку:
+    # dataset_generator.load_chunk_at перечитывает его вместо хранения аудио (у датасетов до v6 поля нет)
+    src_chunk: Dict[str, Any] = field(default_factory=dict)
 
     def to_jsonl_line(self) -> str:
         """Сериализует объект сэмпла в строку JSONL."""
