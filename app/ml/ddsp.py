@@ -213,16 +213,43 @@ def _filter(x: torch.Tensor, h_fn) -> torch.Tensor:
     return torch.fft.irfft(torch.fft.rfft(x, n=n_fft) * h, n=n_fft)[..., :n]
 
 
+# Полоса сибилянтов де-эссера: в ней и детектор, и ослабление. Воздух выше нее не трогается: прежний де-эссер
+# (раздел полос первого порядка на 4.2 кГц, сжатие всего верха) ловил гласные склоном 2–4 кГц и на пороге −31 дБ
+# срезал −6 дБ выше 10 кГц, почти не трогая сибилянты
+DEESS_BAND_HZ = (4500.0, 11000.0)
+DEESS_DETECT_BOOST_DB = 24.0  # пики полосы сибилянтов на −23 LUFS ~−32…−42 дБ: +24 дБ — в диапазон порога
+DEESS_ATTACK_MS, DEESS_RELEASE_MS = 1.5, 35.0
+
+
+def _deess_band_response(sr: int, n_fft: int, device) -> torch.Tensor:
+    """АЧХ полосы сибилянтов (1, n_fft // 2 + 1): Баттерворт 4-го порядка с двух сторон, нулевая фаза."""
+    lo = torch.tensor([DEESS_BAND_HZ[0]], device=device, dtype=torch.float64)
+    hi = torch.tensor([DEESS_BAND_HZ[1]], device=device, dtype=torch.float64)
+    return (butterworth_response("highpass", lo, sr, n_fft) * butterworth_response("lowpass", hi, sr, n_fft)).abs()
+
+
+def deess(x: torch.Tensor, threshold_db: torch.Tensor, ratio: torch.Tensor, sr: int) -> torch.Tensor:
+    """
+    Split-band де-эссер с физическими параметрами (batch,): детектор — пиковая огибающая полосы сибилянтов
+    (каналы связаны, + DEESS_DETECT_BOOST_DB), ослабление выше порога (жесткое колено) — только этой полосы,
+    остальной сигнал проходит как есть. Это же считает DSPEngine.apply_chain (одна реализация для рендера и обучения по звуку).
+    """
+    band = _filter(x, lambda n_fft: _deess_band_response(sr, n_fft, x.device))
+    boost = 10.0 ** (DEESS_DETECT_BOOST_DB / 20.0)
+    detector = band.abs().amax(dim=1) * boost
+    ones = torch.ones_like(threshold_db, dtype=torch.float64)
+    env = Ballistics.apply(detector, time_coefficient(DEESS_ATTACK_MS * ones, sr),
+                           time_coefficient(DEESS_RELEASE_MS * ones, sr))
+    over = env / torch.pow(10.0, threshold_db / 20.0)[:, None]
+    gain = torch.where(over > 1.0, torch.pow(over.clamp_min(1.0), (1.0 / ratio - 1.0)[:, None]),
+                       torch.ones_like(over))
+    return x + band * (gain[:, None, :] - 1.0)
+
+
 def apply_deesser(x: torch.Tensor, params: dict[str, torch.Tensor], sr: int) -> torch.Tensor:
-    """Де-эссер DSPEngine: раздел полос на 4.2 кГц, верх через компрессор (+14 дБ в детектор, 1.5/35 мс)."""
-    thr = denormalize("deesser", "threshold_db", params["threshold_db"])
-    ratio = denormalize("deesser", "ratio", params["ratio"])
-    low = _filter(x, lambda n_fft: first_order_response("lowpass", 4200.0, sr, n_fft, x.device))
-    high = _filter(x, lambda n_fft: first_order_response("highpass", 4200.0, sr, n_fft, x.device))
-    boost = 10.0 ** (14.0 / 20.0)
-    ones = torch.ones_like(thr)
-    high = compress(high * boost, thr, ratio, 1.5 * ones, 35.0 * ones, sr) / boost
-    return low + high
+    """Де-эссер DSPEngine (deess) с нормализованными параметрами."""
+    return deess(x, denormalize("deesser", "threshold_db", params["threshold_db"]),
+                 denormalize("deesser", "ratio", params["ratio"]), sr)
 
 
 def apply_distortion(x: torch.Tensor, params: dict[str, torch.Tensor], sr: int) -> torch.Tensor:

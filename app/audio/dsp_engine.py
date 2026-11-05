@@ -376,27 +376,14 @@ class DSPEngine:
                         print(f"[-] Ошибка обработки Pedalboard перед деэссером: {e}")
                     effects = []
                 
-                # Реализуем Split-Band De-esser (разделяем полосу на 4.2 кГц).
-                # Учитываем, что энергия полосы >4.2 кГц на ~14 дБ ниже широкополосного сигнала (-23 LUFS),
-                # поэтому подаем ВЧ-полосу в детектор с пред-усилением +14 дБ и обратным ослаблением -14 дБ!
-                threshold_db = float(phys.get("threshold_db", -20.0))
-                ratio = float(phys.get("ratio", 4.0))
-                try:
-                    low_board = Pedalboard([LowpassFilter(cutoff_frequency_hz=4200.0)])
-                    y_low = low_board(y_working, sr)
-                    
-                    high_board = Pedalboard([
-                        HighpassFilter(cutoff_frequency_hz=4200.0),
-                        Gain(gain_db=14.0),
-                        Compressor(threshold_db=threshold_db, ratio=ratio, attack_ms=1.5, release_ms=35.0),
-                        Gain(gain_db=-14.0)
-                    ])
-                    y_high_compressed = high_board(y_working, sr)
-                    
-                    # Суммируем полосы обратно
-                    y_working = y_low + y_high_compressed
-                except Exception as e:
-                    print(f"[-] Ошибка обработки De-esser: {e}")
+                # Split-band де-эссер: детектор и ослабление только в полосе сибилянтов 4.5–11 кГц
+                # (app/ml/ddsp.py, deess — та же реализация, по которой сеть учится по звуку)
+                import torch
+                from app.ml.ddsp import deess
+                x = torch.from_numpy(np.atleast_2d(y_working).astype(np.float64))[None]
+                y_out = deess(x, torch.tensor([float(phys.get("threshold_db", -20.0))], dtype=torch.float64),
+                              torch.tensor([float(phys.get("ratio", 4.0))], dtype=torch.float64), sr)[0]
+                y_working = y_out.numpy().astype(np.float32).reshape(y_working.shape)
                     
             elif plugin.name == "multiband_compressor":
                 # Сначала рендерим предыдущие эффекты

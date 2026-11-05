@@ -128,3 +128,31 @@ def test_tone_chain_matches_dsp_engine_and_soft_gate_interpolates():
                                                  "distortion": torch.zeros(1)})
     from app.ml.ddsp import apply_eq
     assert torch.allclose(off, apply_eq(xt, tensors["eq"], SR))
+
+
+def test_deesser_cuts_sibilance_not_vowels_or_air():
+    """Де-эссер ослабляет всплески в полосе сибилянтов, не трогая гласные (<4 кГц) и воздух (>12 кГц)."""
+    from scipy.signal import butter, sosfilt
+
+    from app.dataset.dataset_schema import DATAGEN_PLUGINS
+
+    rng = np.random.default_rng(5)
+    t = np.arange(SR) / SR
+    vowel = 0.2 * sum(np.sin(2 * np.pi * f * t) / k for k, f in enumerate((220, 440, 660, 880, 1760), 1))
+    sib = sosfilt(butter(4, (5500, 9000), "bandpass", fs=SR, output="sos"), rng.standard_normal(SR)) * 0.3
+    sib[: SR // 2] = 0.0  # «с» только во второй половине
+    air = sosfilt(butter(4, 13000, "highpass", fs=SR, output="sos"), rng.standard_normal(SR)) * 0.01
+    x = np.vstack([vowel + sib + air] * 2).astype(np.float32)
+    lo, hi = DATAGEN_PLUGINS["deesser"]["params"]["threshold_db"]
+    chain = ChainConfig(plugins=[PluginConfig("deesser", {"threshold_db": (-28.0 - lo) / (hi - lo), "ratio": 1.0})])
+    y = DSPEngine().apply_chain(x, SR, chain, final_limiter=False)
+
+    def band_db(s, lo_hz, hi_hz, part):
+        seg = s[0, SR // 2:] if part else s[0, : SR // 2]
+        spec = np.abs(np.fft.rfft(seg)) ** 2
+        f = np.fft.rfftfreq(len(seg), 1 / SR)
+        return 10 * np.log10(spec[(f >= lo_hz) & (f < hi_hz)].sum())
+
+    assert band_db(x, 5500, 9000, 1) - band_db(y, 5500, 9000, 1) > 6.0  # сибилянты ослаблены
+    assert abs(band_db(x, 100, 3000, 0) - band_db(y, 100, 3000, 0)) < 0.2  # гласная без «с» не тронута
+    assert abs(band_db(x, 13000, 20000, 1) - band_db(y, 13000, 20000, 1)) < 1.0  # воздух почти не тронут
