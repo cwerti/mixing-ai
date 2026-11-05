@@ -156,9 +156,18 @@ def _fmt(a: np.ndarray) -> str:
     return f"{np.nanmedian(a):6.1f} [{np.nanpercentile(a, 10):6.1f}..{np.nanpercentile(a, 90):6.1f}]"
 
 
+def _test_pairs() -> set[str]:
+    """Пары замороженного честного теста (app/data/test_songs.json): по ним генератор не калибруется."""
+    path = Path("app/data/test_songs.json")
+    return set(json.loads(path.read_text(encoding="utf-8"))["pairs"]) if path.exists() else set()
+
+
 def compare(args) -> None:
-    real_path = OUT / "outcomes_real.json"
     rows = _ok_pairs()
+    if not args.with_test_pairs:
+        test = _test_pairs()
+        rows = [r for r in rows if r["name"] not in test]
+    real_path = OUT / ("outcomes_real.json" if args.with_test_pairs else "outcomes_real_calib.json")
     if real_path.exists():
         real = json.loads(real_path.read_text(encoding="utf-8"))
     else:
@@ -197,6 +206,8 @@ def main() -> None:
     p.add_argument("--harmony-ratio", type=float, default=0.35, help="как dataset_v5")
     p.add_argument("--own-prob", type=float, default=0.35, help="как dataset_v5; 1.0 — только наш DSP")
     p.add_argument("--tag", default="current")
+    p.add_argument("--with-test-pairs", action="store_true",
+                   help="калибровать и по парам честного теста (по умолчанию только по калибровочной половине)")
     p.add_argument("--update-bias", action="store_true",
                    help="добавить расхождение спектра с настоящими сведениями к поправке цели EQ генератора")
     p.set_defaults(func=compare)

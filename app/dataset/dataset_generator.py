@@ -270,40 +270,40 @@ REALISTIC_STYLES: Dict[str, Tuple[float, Dict[str, float]]] = {
     # Стоковый «западный» рэп/трэп: Pitcher → EQ → Fruity Compressor → Maximus de-ess → Reeverb 2 → Delay 3
     "stock_west": (0.20, {
         "pitch_corrector": 0.65, "compressor": 0.95, "deesser": 0.75, "multiband_compressor": 0.15,
-        "distortion": 0.12, "chorus": 0.05, "stereo_enhancer": 0.08, "reverb": 0.85, "delay": 0.70,
+        "distortion": 0.12, "chorus": 0.05, "stereo_enhancer": 0.08, "reverb": 0.85, "delay": 0.40,
         "exciter": 0.45}),
     # Стоковые «русские» пресеты: две ступени компрессии, Blood Overdrive/Soundgoodizer как соус
     "stock_ru": (0.15, {
         "pitch_corrector": 0.80, "compressor": 0.95, "deesser": 0.70, "multiband_compressor": 0.35,
-        "distortion": 0.35, "chorus": 0.10, "stereo_enhancer": 0.08, "reverb": 0.85, "delay": 0.65,
+        "distortion": 0.35, "chorus": 0.10, "stereo_enhancer": 0.08, "reverb": 0.85, "delay": 0.40,
         "exciter": 0.55}),
     # Rage / новая школа: жесткий тюн, два сатуратора, хорус ~7 %
     "rage": (0.14, {
         "pitch_corrector": 0.95, "compressor": 0.90, "deesser": 0.70, "multiband_compressor": 0.35,
-        "distortion": 0.55, "chorus": 0.30, "stereo_enhancer": 0.10, "reverb": 0.85, "delay": 0.70,
+        "distortion": 0.55, "chorus": 0.30, "stereo_enhancer": 0.10, "reverb": 0.85, "delay": 0.45,
         "exciter": 0.55}),
     # Hyperpop: OTT, сатурация на всех слоях, модуляция
     "hyperpop": (0.10, {
         "pitch_corrector": 0.95, "compressor": 0.85, "deesser": 0.60, "multiband_compressor": 0.65,
-        "distortion": 0.55, "chorus": 0.40, "stereo_enhancer": 0.25, "reverb": 0.80, "delay": 0.70,
+        "distortion": 0.55, "chorus": 0.40, "stereo_enhancer": 0.25, "reverb": 0.80, "delay": 0.45,
         "exciter": 0.65}),
     # Pluggnb / R&B: мягкая динамика, длинный темный реверб, хорус на ширину
     "pluggnb_rnb": (0.12, {
         "pitch_corrector": 0.85, "compressor": 0.90, "deesser": 0.65, "multiband_compressor": 0.20,
-        "distortion": 0.08, "chorus": 0.35, "stereo_enhancer": 0.20, "reverb": 0.90, "delay": 0.60,
+        "distortion": 0.08, "chorus": 0.35, "stereo_enhancer": 0.20, "reverb": 0.90, "delay": 0.35,
         "exciter": 0.45}),
     "pop": (0.13, {
         "pitch_corrector": 0.55, "compressor": 0.90, "deesser": 0.75, "multiband_compressor": 0.25,
-        "distortion": 0.08, "chorus": 0.15, "stereo_enhancer": 0.20, "reverb": 0.85, "delay": 0.55,
+        "distortion": 0.08, "chorus": 0.15, "stereo_enhancer": 0.20, "reverb": 0.85, "delay": 0.30,
         "exciter": 0.50}),
     "indie_rock": (0.10, {
         "pitch_corrector": 0.20, "compressor": 0.90, "deesser": 0.55, "multiband_compressor": 0.25,
-        "distortion": 0.40, "chorus": 0.25, "stereo_enhancer": 0.15, "reverb": 0.75, "delay": 0.45,
+        "distortion": 0.40, "chorus": 0.25, "stereo_enhancer": 0.15, "reverb": 0.75, "delay": 0.25,
         "exciter": 0.35}),
     # Почти без обработки: учит «ничего не включать», когда референс близок к сухому
     "dry_clean": (0.06, {
         "pitch_corrector": 0.10, "compressor": 0.60, "deesser": 0.40, "multiband_compressor": 0.0,
-        "distortion": 0.0, "chorus": 0.0, "stereo_enhancer": 0.0, "reverb": 0.20, "delay": 0.05,
+        "distortion": 0.0, "chorus": 0.0, "stereo_enhancer": 0.0, "reverb": 0.20, "delay": 0.03,
         "exciter": 0.10}),
 }
 
@@ -349,10 +349,10 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
         return {"threshold_db": thresh, "ratio": float(ratio), "attack_ms": float(attack),
                 "release_ms": float(release)}
     if name == "deesser":
-        # Де-эссер DSPEngine (раздел полос первого порядка на 4.2 кГц) почти не трогает сибилянты, зато при пороге
-        # ниже −24 дБ срезает весь верх: −6 дБ выше 10 кГц на пороге −31 дБ. С порогом 0.05–0.80, как в
-        # dataset_v5, генератор поэтому делал референсы темнее настоящих сведений; лёгкий де-эссинг — 0.45–0.90.
-        thresh = u(0.05, 0.80) if covered else u(0.45, 0.90)
+        # Порог −32…−16.5 дБ: выше −18 дБ де-эссер почти не срабатывает (у dataset_v6 с порогом 0.45–0.90 вклад
+        # < 0.3 дБ у 37 % включенных). Прежний де-эссер на низком пороге срезал весь верх; split-band де-эссер
+        # (app/ml/ddsp.py, deess) трогает только полосу сибилянтов, поэтому порог можно опустить.
+        thresh = u(0.05, 0.80) if covered else u(0.15, 0.75)
         return {"threshold_db": thresh,
                 "ratio": float(np.clip(0.20 + 0.75 * (1.0 - thresh) + u(-0.12, 0.12), 0.0, 1.0))}
     if name == "multiband_compressor":
@@ -403,8 +403,10 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
             delay = DSPEngine.normalize_value(60.0 / u(120.0, 165.0) * beats, lo, hi)
         # Повторы «на подложку»: тихие, короткий хвост и срезанные низ/верх, как у инженеров. Полнополосные
         # громкие повторы с feedback до 0.5 (dataset_v5) на слух — эхо, повторяющее слова (прослушивание 2026-11-05)
-        # Даже в равномерной доле (covered) громкость не выше ~0.2 физ.: громче — эхо поверх голоса
-        mix = u(0.03, 0.6) if covered else u(0.03, 0.35)
+        # Даже в равномерной доле (covered) громкость не выше ~0.23 физ.: громче — эхо поверх голоса. Снизу —
+        # от 0.07 физ.: при 0.01–0.05 (dataset_v6) дилей не слышен (вклад в log-mel < 0.3 дБ у 55 % включенных),
+        # и метка «включен» без звука учила сеть ставить дилей по частоте, а не по референсу
+        mix = u(0.2, 0.65) if covered else u(0.2, 0.5)
         ranges = DATAGEN_PLUGINS["delay"]["params"]
         return {"delay_seconds": float(delay), "mix": mix,
                 "feedback": float(np.clip(0.10 + 0.45 * mix + u(-0.08, 0.08), 0.0, 1.0)),
