@@ -365,8 +365,10 @@ class EffectVariants:
             out.pop("rev_ir_algorithmic", None)
         category = VST_CATEGORY.get(name)
         if self.vst_pool is not None and category and self.vst_pool.has(category):
+            # Mix VST — доля мокрого 0..1: у дилея это физическая громкость повторов (до 0.35), а не
+            # нормализованная по схеме (иначе повторы VST громче наших в ~3 раза)
             out["vst_" + category] = (1.0, lambda y, phys, norm, r, c=category: self.vst_pool.render(
-                y, self.sr, c, norm, r))
+                y, self.sr, c, {**norm, "mix": phys["mix"]} if c == "delay" and "mix" in phys else norm, r))
         return out
 
     def choose(self, name: str, rng: random.Random) -> str:
@@ -792,23 +794,30 @@ class EffectVariants:
                 float(np.clip(phys.get("feedback", 0.3) * rng.uniform(0.8, 1.25), 0.0, 0.9)),
                 phys.get("mix", 0.15) * rng.uniform(0.8, 1.5))
 
-    def _delay_filters(self, rng) -> list:
-        return [HighpassFilter(cutoff_frequency_hz=rng.uniform(100.0, 500.0)),
-                LowpassFilter(cutoff_frequency_hz=min(0.45 * self.sr, rng.uniform(2500.0, 9000.0)))]
+    def _delay_filters(self, rng, phys: dict | None = None) -> list:
+        """Фильтры повторов: срезы send-шины цепочки (±15 %), если заданы, иначе случайные."""
+        phys = phys or {}
+        low = (phys["low_cut_hz"] * rng.uniform(0.85, 1.15) if "low_cut_hz" in phys
+               else rng.uniform(100.0, 500.0))
+        high = (phys["high_cut_hz"] * rng.uniform(0.85, 1.15) if "high_cut_hz" in phys
+                else rng.uniform(2500.0, 9000.0))
+        return [HighpassFilter(cutoff_frequency_hz=low),
+                LowpassFilter(cutoff_frequency_hz=min(0.45 * self.sr, high))]
 
     def _delay_pingpong(self, y, phys, norm, rng):
         delay, fb, mix = self._delay_settings(phys, rng)
         mono = y.mean(axis=0)
         wet = np.zeros_like(y)
         first = rng.randint(0, 1)
-        for k, tap in enumerate(self._taps(mono, delay, fb, self._delay_filters(rng) if rng.random() < 0.7 else None)):
+        filt = self._delay_filters(rng, phys) if "high_cut_hz" in phys or rng.random() < 0.7 else None
+        for k, tap in enumerate(self._taps(mono, delay, fb, filt)):
             wet[(first + k) % 2] += tap
         return (y + mix * wet).astype(np.float32)
 
     def _delay_tape(self, y, phys, norm, rng):
         """Ленточное эхо: повторы темнеют и насыщаются, в центре."""
         delay, fb, mix = self._delay_settings(phys, rng)
-        taps = self._taps(y, delay, fb, self._delay_filters(rng), saturate=rng.uniform(0.5, 2.0))
+        taps = self._taps(y, delay, fb, self._delay_filters(rng, phys), saturate=rng.uniform(0.5, 2.0))
         wet = np.sum(taps, axis=0) if taps else np.zeros_like(y)
         return ((1.0 - 0.5 * mix) * y + mix * wet).astype(np.float32)
 
@@ -816,7 +825,7 @@ class EffectVariants:
         """Разные времена L/R (вторая сторона ×1.25–1.6, «пунктир»), фильтрованная обратная связь."""
         delay, fb, mix = self._delay_settings(phys, rng)
         mono = y.mean(axis=0)
-        filt = self._delay_filters(rng)
+        filt = self._delay_filters(rng, phys)
         wet = np.zeros_like(y)
         for ch, factor in ((0, 1.0), (1, rng.uniform(1.25, 1.6))):
             taps = self._taps(mono, delay * factor, fb, filt)

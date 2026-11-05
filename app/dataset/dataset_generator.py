@@ -388,7 +388,8 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
             delay = DSPEngine.normalize_value(60.0 / u(120.0, 165.0) * beats, lo, hi)
         # Повторы «на подложку»: тихие, короткий хвост и срезанные низ/верх, как у инженеров. Полнополосные
         # громкие повторы с feedback до 0.5 (dataset_v5) на слух — эхо, повторяющее слова (прослушивание 2026-11-05)
-        mix = u(0.10, 0.95) if covered else u(0.03, 0.35)
+        # Даже в равномерной доле (covered) громкость не выше ~0.2 физ.: громче — эхо поверх голоса
+        mix = u(0.03, 0.6) if covered else u(0.03, 0.35)
         ranges = DATAGEN_PLUGINS["delay"]["params"]
         return {"delay_seconds": float(delay), "mix": mix,
                 "feedback": float(np.clip(0.10 + 0.45 * mix + u(-0.08, 0.08), 0.0, 1.0)),
