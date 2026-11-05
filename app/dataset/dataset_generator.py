@@ -58,6 +58,11 @@ NON_VOCAL_STEMS = frozenset({
     "Zane_Carney__Friends_Talk_To_M_ROOM MIC - ELA M 251E - API 1608",
     "Zwiepack_Air_04_SaxMic1_SpotMic",
     "Zwiepack_Air_05_SaxMic2_PeerArray",
+    # Проверка всего пула Demucs (2026-11-05): доля энергии вокала −35…−55 дБ против 0…−11 дБ у остальных
+    "I_Am_Cassettes_Believe_ACT Lead",
+    "Szlachetka_Heart_Of_My_Home_To_Vocals-BG Keys-M81_09-07",
+    "Kung_Fu_Joy_Ride_Vocals-1-M80",
+    "Candlebox_Surrendering_Vocals-Brian-Proto",
 })
 
 
