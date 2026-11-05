@@ -386,9 +386,14 @@ def _realistic_params(name: str, style: str, rng: random.Random) -> Dict[str, fl
             # Синхронизация с темпом: 1/4 (4 источника), 1/8, реже 1/16 при 120–165 BPM
             beats = rng.choices((1.0, 0.5, 0.25), weights=(0.45, 0.40, 0.15))[0]
             delay = DSPEngine.normalize_value(60.0 / u(120.0, 165.0) * beats, lo, hi)
-        mix = u(0.10, 0.95) if covered else u(0.05, 0.6)  # тихие повторы «на подложку», как и ревер
+        # Повторы «на подложку»: тихие, короткий хвост и срезанные низ/верх, как у инженеров. Полнополосные
+        # громкие повторы с feedback до 0.5 (dataset_v5) на слух — эхо, повторяющее слова (прослушивание 2026-11-05)
+        mix = u(0.10, 0.95) if covered else u(0.03, 0.35)
+        ranges = DATAGEN_PLUGINS["delay"]["params"]
         return {"delay_seconds": float(delay), "mix": mix,
-                "feedback": float(np.clip(0.18 + 0.70 * mix + u(-0.12, 0.12), 0.0, 1.0))}
+                "feedback": float(np.clip(0.10 + 0.45 * mix + u(-0.08, 0.08), 0.0, 1.0)),
+                "low_cut_hz": DSPEngine.normalize_value(u(150.0, 600.0), *ranges["low_cut_hz"]),
+                "high_cut_hz": DSPEngine.normalize_value(u(2500.0, 6000.0), *ranges["high_cut_hz"])}
     if name == "exciter":
         return {"mix": u(0.05, 0.95), "cutoff_hz": u(0.05, 0.95)}
     raise ValueError(f"Нет реалистичного prior для плагина {name}")
