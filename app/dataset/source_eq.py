@@ -18,6 +18,10 @@ GRID_HZ = np.geomspace(40.0, 16000.0, 53)
 # Опорные частоты полос EQ генератора внутри диапазонов DATAGEN_PLUGINS["eq"] (полоса 1 и 7 — полки)
 EQ_CENTERS_HZ = (80.0, 160.0, 450.0, 1300.0, 3000.0, 7000.0, 11000.0)
 _MID = (GRID_HZ >= 200) & (GRID_HZ <= 5000)
+# Потолок и штраф EQ генератора: без них подгонка под чужой спектр упирала 23% полос в ±12 дБ с соседями
+# разного знака (у EQ «сухой → сведение» Cambridge таких 10%) — на слух бубнящий низ и «гребенка»
+SOURCE_EQ_LIMIT_DB = 9.0
+SOURCE_EQ_RIDGE = 2.0
 
 
 def ltas_db(y: np.ndarray, sr: int) -> np.ndarray:
@@ -48,10 +52,10 @@ def eq_response_db(freqs: np.ndarray, gains: np.ndarray, sr: int) -> np.ndarray:
     return resp - resp[_MID].mean()
 
 
-def fit_eq_gains(curve: np.ndarray, freqs: np.ndarray, sr: int, steps: int = 4, ridge: float = 0.5
-                 ) -> tuple[np.ndarray, float]:
+def fit_eq_gains(curve: np.ndarray, freqs: np.ndarray, sr: int, steps: int = 4, ridge: float = 0.5,
+                 limit: float = 12.0) -> tuple[np.ndarray, float]:
     """
-    Усиления полос (дБ, ±12), чья АЧХ ближе всего к кривой (обе без общего уровня): Гаусс-Ньютон со слабой
+    Усиления полос (дБ, ±limit), чья АЧХ ближе всего к кривой (обе без общего уровня): Гаусс-Ньютон со слабой
     тягой к нулю. Возвращает усиления и остаточную ошибку (средний модуль, дБ).
     """
     gains = np.zeros(len(freqs))
@@ -61,7 +65,7 @@ def fit_eq_gains(curve: np.ndarray, freqs: np.ndarray, sr: int, steps: int = 4, 
                         for i in range(len(gains))], axis=1)
         reg = ridge * np.eye(len(gains))
         gains = np.clip(gains + np.linalg.solve(jac.T @ jac + reg, jac.T @ (curve - base) - reg @ gains),
-                        -12.0, 12.0)
+                        -limit, limit)
     return gains, float(np.mean(np.abs(curve - eq_response_db(freqs, gains, sr))))
 
 
@@ -130,9 +134,10 @@ def source_aware_eq(y: np.ndarray, sr: int, rng: random.Random, render=None, pas
     gains = np.zeros(len(freqs))
     start = smooth_octave(ltas_db(render(to_params(gains)) if render else y, sr))
     goal = start + amount * (smooth_octave(target) - start) + target_bias()
-    gains, _ = fit_eq_gains(goal - start, freqs, sr)
+    fit = dict(ridge=SOURCE_EQ_RIDGE, limit=SOURCE_EQ_LIMIT_DB)
+    gains, _ = fit_eq_gains(goal - start, freqs, sr, **fit)
     for _ in range(passes if render else 0):
         residual = goal - smooth_octave(ltas_db(render(to_params(gains)), sr))
-        step, _ = fit_eq_gains(residual, freqs, sr)
-        gains = np.clip(gains + step, -12.0, 12.0)
+        step, _ = fit_eq_gains(residual, freqs, sr, **fit)
+        gains = np.clip(gains + step, -SOURCE_EQ_LIMIT_DB, SOURCE_EQ_LIMIT_DB)
     return to_params(gains)
